@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
 
-const CodeSyncLanding = () => {
+const RoomCreate = () => {
   const [view, setView] = useState('main'); // main, create, join
   const [loading, setLoading] = useState(false);
   const [roomName, setRoomName] = useState('');
@@ -49,13 +49,13 @@ const CodeSyncLanding = () => {
 
   const cardVariants = {
     main: {
-      scale: 1,
+      scale: 0.77,
       width: '100%',
       maxWidth: '500px',
       transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] }
     },
     small: {
-      scale: 1,
+      scale: 0.77,
       width: '100%',
       maxWidth: '420px',
       transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] }
@@ -337,14 +337,15 @@ const CodeSyncLanding = () => {
         </motion.div>
 
         {/* Bottom Info Text */}
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-          className="mt-6 sm:mt-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4"
-        >
-          Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.
-        </motion.p>
+       <motion.p
+  initial={{ opacity: 0 }}
+  animate={{ opacity: 1 }}
+  transition={{ delay: 0.5 }}
+  className="absolute bottom-6 sm:bottom-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4"
+>
+  Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.
+</motion.p>
+
       </div>
 
       {/* Footer */}
@@ -367,4 +368,4 @@ const CodeSyncLanding = () => {
   );
 };
 
-export default CodeSyncLanding;
+export default RoomCreate;
