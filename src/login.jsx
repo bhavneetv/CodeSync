@@ -1,23 +1,30 @@
 import React, { useState, useEffect, use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import supabase from './supabaseClinet';
+import { isLoggin } from "./function/login/isLoggin.js";
 
 import { Terminal, Mail, Lock, User, Eye, EyeOff, Loader2, Github, ArrowRight, Chrome } from 'lucide-react';
 import {
   login,
   signup,
   loginWithGoogle,
-  logout
+  logout,
+  getUser,
 } from "./function/login/auth.js";
 
 // Shared Auth Layout Component
 const AuthLayout = ({ children }) => {
-  useEffect(() => {
-    signup("bhanu","idfake00420@gmail.com", "password1233!@");
 
-  } , [])
-  
-  
+  // check the login status
+  useEffect(() => {
+    isLoggin()
+    
+  }, []);
+
+
+
+
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 text-white font-sans relative overflow-hidden">
@@ -65,7 +72,16 @@ const LoginPage = ({ onSwitchToSignup }) => {
 
   const handleSubmit = () => {
     setLoading(true);
-    console.log({ email, password });
+
+    //  login function call
+    login(email, password).then(value => {
+      if (typeof value === 'string') {
+        console.error("Login error:", value);
+      } else {
+        console.log("Login success:", value);
+      }
+      // console.log(value);
+    });
     setTimeout(() => setLoading(false), 2000);
   };
 
@@ -236,7 +252,17 @@ const SignupPage = ({ onSwitchToLogin }) => {
 
   const handleSubmit = () => {
     setLoading(true);
-    console.log({ name, email, password });
+    // console.log({ name, email, password });
+
+    //! signup function call
+    signup(name, email, password).then(value => {
+      if (typeof value === 'string') {
+        console.error("Signup error:", value);
+      } else {
+        console.log("Signup success:", value);
+      }
+      // console.log(value);
+    });
     setTimeout(() => setLoading(false), 2000);
   };
 

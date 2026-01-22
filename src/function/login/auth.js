@@ -7,9 +7,9 @@ export async function login(email, password) {
     });
 
     if (error) {
-        console.error("Login error:", error.message);
+        return error.message;
     } else {
-        console.log("Login success:", data);
+        return data
     }
 }
 
@@ -17,10 +17,14 @@ export async function signup(name, email, password) {
     const { data, error } = await supabase.auth.signUp({
         email: email,
         password: password,
-        Name: name
+        options: {
+            data: {
+                name: name,
+            },
+        },
+
 
     });
-    console.log("Signup function called with:", name, email, password);
 
     if (error) {
         console.error("Signup error:", error.message);
@@ -38,4 +42,11 @@ export async function loginWithGoogle() {
 
 export async function logout() {
     return await supabase.auth.signOut();
+}
+
+export async function getUser() {
+    const { data: { session } } = await supabase.auth.getSession();
+
+    return session;
+
 }
