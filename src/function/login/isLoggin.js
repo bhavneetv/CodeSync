@@ -1,22 +1,24 @@
 import supabase from "../../supabaseClinet";
 
-export async function isLoggin() {
+export async function isLoggin(val) {
     const { data: { session } } = await supabase.auth.getSession();
     if (session) {
         if (window.location.pathname === '/login') {
             return redirectIfLoggedIn();
         }
-
-    }
-     else {
-        if (window.location.pathname !== '/login') {
-            return false;
+        else {
+            if (val == "info") return session.user.user_metadata;
+            else return session.user;
         }
 
-        return window.location.href = '/login';
+    }
+    else {
+        return false;
     }
 
-    return session;
+
+
+
 
 }
 function redirectIfLoggedIn() {

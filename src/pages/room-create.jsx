@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Footer from '../Components/footer';
+import Navbar from '../Components/navbar.jsx';
+import { isLoggin } from '../function/login/isLoggin.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
 
 const RoomCreate = () => {
@@ -9,6 +12,7 @@ const RoomCreate = () => {
   const [roomPassword, setRoomPassword] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [showPasswordInput, setShowPasswordInput] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const handleCreateRoom = async () => {
     setLoading(true);
@@ -18,7 +22,14 @@ const RoomCreate = () => {
       console.log('Room created successfully');
     }, 2000);
   };
-
+  useEffect(() => {
+    (async () => {
+      const loggedIn = await isLoggin();
+      if (loggedIn) {
+        setIsLoggedIn(true);
+      }
+    })();
+  }, []);
   const handleJoinNext = () => {
     if (!showPasswordInput) {
       console.log('Room code entered:', roomCode);
@@ -70,57 +81,9 @@ const RoomCreate = () => {
       `}</style>
 
       {/* Animated Round Navbar */}
-      <motion.nav 
-        initial={{ y: -100 }}
-        animate={{ y: 0 }}
-        transition={{ duration: 0.6, ease: "easeOut" }}
-        className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 w-11/12 max-w-4xl"
-      >
-        <div className="backdrop-blur-xl bg-black/40 border border-white/10 rounded-full shadow-2xl px-4 sm:px-6 py-3">
-          <div className="flex justify-between items-center">
-            {/* Logo */}
-            <div className="flex items-center space-x-2">
-              <div className="w-7 h-7 sm:w-8 sm:h-8 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-lg flex items-center justify-center shadow-lg">
-                <Terminal className="w-4 h-4 sm:w-5 sm:h-5 text-white" strokeWidth={2.5} />
-              </div>
-              <span className="text-lg sm:text-xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
-                CodeSync
-              </span>
-            </div>
 
-            {/* Center Links */}
-            <div className="hidden md:flex items-center space-x-4 absolute left-1/2 transform -translate-x-1/2">
-              <button className="flex items-center space-x-1 text-gray-400 hover:text-white transition-colors text-sm">
-                <Home className="w-4 h-4" />
-                <span>Home</span>
-              </button>
-              <button className="flex items-center space-x-1 text-gray-400 hover:text-white transition-colors text-sm">
-                <Info className="w-4 h-4" />
-                <span>About</span>
-              </button>
-            </div>
+      <Navbar path={window.location.pathname} />
 
-            {/* Right Buttons */}
-            <div className="hidden md:flex items-center space-x-3">
-              <button className="px-3 py-1.5 text-gray-400 hover:text-white hover:bg-white/5 rounded-full transition-all text-sm">
-                <LogIn className="w-3.5 h-3.5 inline mr-1" />
-                Login
-              </button>
-              <button className="px-4 py-1.5 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-full font-medium transition-all hover:shadow-lg hover:shadow-blue-500/50 text-sm">
-                <UserPlus className="w-3.5 h-3.5 inline mr-1" />
-                Signup
-              </button>
-            </div>
-
-            {/* Mobile Menu Button */}
-            <div className="md:hidden">
-              <button className="px-3 py-1.5 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full text-xs font-medium">
-                Menu
-              </button>
-            </div>
-          </div>
-        </div>
-      </motion.nav>
 
       {/* Main Content */}
       <div className="flex flex-col items-center justify-center min-h-screen px-4 pt-24 pb-12">
@@ -144,7 +107,7 @@ const RoomCreate = () => {
                     Code Together Instantly
                   </h1>
                   <p className="text-gray-400 text-base sm:text-lg mb-8 sm:mb-12">
-                    No login required to start
+                    {isLoggedIn ? '' : 'No login required to start '}
                   </p>
 
                   <div className="space-y-3 sm:space-y-4">
@@ -155,7 +118,7 @@ const RoomCreate = () => {
                       className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 sm:space-x-3 transition-all shadow-lg hover:shadow-blue-500/50"
                     >
                       <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
-                      <span>Create Temporary Room</span>
+                      <span>Create {isLoggedIn ? '' : 'Temporary '} Room</span>
                     </motion.button>
 
                     <motion.button
@@ -189,9 +152,9 @@ const RoomCreate = () => {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Create Temporary Room</h2>
+                  <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Create a {isLoggedIn ? '' : 'Temporary '} Room</h2>
                   <p className="text-gray-500 text-xs sm:text-sm text-center mb-6 sm:mb-8">
-                    This room will expire in 24 hours. Login to save permanently.
+                    { isLoggedIn ? '' : 'Temporary rooms expire after 24 hours. Login to create permanent rooms with extra features.'  }
                   </p>
 
                   <div className="space-y-3 sm:space-y-4 mb-5 sm:mb-6">
@@ -337,33 +300,20 @@ const RoomCreate = () => {
         </motion.div>
 
         {/* Bottom Info Text */}
-       <motion.p
-  initial={{ opacity: 0 }}
-  animate={{ opacity: 1 }}
-  transition={{ delay: 0.5 }}
-  className="absolute bottom-6 sm:bottom-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4"
->
-  Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.
-</motion.p>
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="absolute bottom-6 sm:bottom-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4"
+        >
+         {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
+        </motion.p>
 
       </div>
 
       {/* Footer */}
-      <footer className="py-4 sm:py-6 border-t border-white/10 bg-black/20">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="text-gray-500 text-xs sm:text-sm mb-1.5 sm:mb-2">© 2026 CodeSync</p>
-          <div className="flex justify-center items-center space-x-3 sm:space-x-4 text-xs text-gray-600">
-            <button className="hover:text-gray-400 transition-colors">Privacy</button>
-            <span>•</span>
-            <button className="hover:text-gray-400 transition-colors">Terms</button>
-            <span>•</span>
-            <button className="flex items-center space-x-1 hover:text-gray-400 transition-colors">
-              <Github className="w-3.5 h-3.5" />
-              <span>GitHub</span>
-            </button>
-          </div>
-        </div>
-      </footer>
+      <div className="mt-auto py-4 sm:py-6 px-3" ><Footer /></div>
+
     </div>
   );
 };

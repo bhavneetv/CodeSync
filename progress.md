@@ -1,240 +1,229 @@
-# progress.md
+# 📈 CodeSync – Development Progress Plan
 
-## CodeSync – Project Progress Tracker
+This document tracks the **week-by-week task distribution** for CodeSync.  
+The project is developed by **two developers**, with **clear ownership** and **collaboration on complex features only**.
 
-Project Name: CodeSync  
-Team Size: 2 Developers  
-Start Date: __________  
-Target Completion: __________  
+---
 
-This document tracks weekly progress, completed tasks, pending work, and issues.
+## 👥 Team
 
---------------------------------------------------
+- **Developer A**
+- **Developer B**
 
-## TEAM MEMBERS
+---
 
-Developer A – Frontend
-- React + Vite
-- UI / UX
-- Editor, File Explorer, Terminal
-- Collaboration UI
+## 🗓 Week 1 – Project Setup & Planning ✓
 
-Developer B – Backend
-- Authentication
-- GitHub OAuth
-- SQL Database
-- Real-time sync
-- Code execution
-- Workspace management
+✓
 
---------------------------------------------------
+### Goals
+- Project foundation
+- Shared understanding
 
-## WEEK 0 – PLANNING & SETUP
+### Tasks
+- Project vision, workflows, feature finalization  
+   ✓ **Assigned:** Developer A
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+- Vite + React project setup  
+ ✓ **Assigned:** Developer B
 
-Completed:
-- [ ] Feature list finalized
-- [ ] Project rules frozen
-- [ ] GitHub organization created
-- [ ] Repository structure created
-- [ ] Git workflow defined
+- Tailwind CSS setup & theme configuration  
+ ✓ **Assigned:** Developer B
 
-Developer A:
-- [ ] React + Vite project initialized
-- [ ] Base layout created
-- [ ] Dark theme applied
+- Folder structure & coding conventions  
+ ✓ **Assigned:** Developer A
 
-Developer B:
-- [ ] Backend project initialized
-- [ ] SQL connection configured
-- [ ] Initial schema.sql created
+- Base Navbar & Footer components  
+ ✓ **Assigned:** Developer A
 
-Issues / Notes:
-- 
+---
 
---------------------------------------------------
+## 🗓 Week 2 – Landing Page & Auth UI
 
-## WEEK 1 – AUTHENTICATION & ROOMS
+### Goals
+- Public-facing UI
+- First user impression
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+### Tasks
+- Landing page (Hero, Features, CTA, Footer)  
+  ✓ **Assigned:** Developer A
 
-Completed:
-- [ ] User authentication implemented
-- [ ] GitHub OAuth login added
-- [ ] Access token stored securely
-- [ ] Room creation API
-- [ ] Room join API
+- Login page UI  
+ ✓ **Assigned:** Developer B
 
-Developer A:
-- [ ] Login UI
-- [ ] GitHub sign-in UI
-- [ ] Create room screen
-- [ ] Join room screen
+- Signup page UI  
+ ✓ **Assigned:** Developer B
 
-Developer B:
-- [ ] User table completed
-- [ ] Room table completed
-- [ ] Ownership logic implemented
+- Google & GitHub sign-in UI (no backend)  
+ ✓ **Assigned:** Developer A
 
-Issues / Notes:
--
+- Responsive testing (mobile & tablet)  
+ ✓ **Assigned:** Developer B
 
---------------------------------------------------
+---
 
-## WEEK 2 – FILE SYSTEM & EDITOR
+## 🗓 Week 3 – Room Creation & Join Flow
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+### Goals
+- Core user flow
+- Temporary room logic
 
-Completed:
-- [ ] File explorer implemented
-- [ ] Create / rename / delete files
-- [ ] Multi-file editing
-- [ ] File save & load logic
+### Tasks
+- Create / Join / Solo Room page UI  
+  **Assigned:** Developer A
 
-Developer A:
-- [ ] Code editor integrated
-- [ ] File tree UI
-- [ ] Editor state sync
+- Card morph animations (big ↔ small)  
+  **Assigned:** Developer B
 
-Developer B:
-- [ ] Files table implemented
-- [ ] File CRUD APIs
-- [ ] Workspace folder creation
+- Temporary room warning & expiry UI  
+  **Assigned:** Developer A
 
-Issues / Notes:
--
+- Join room with password UI  
+  **Assigned:** Developer B
 
---------------------------------------------------
+- Mock room state & console-based logic  
+  **Assigned:** Developer A
 
-## WEEK 3 – REAL-TIME COLLABORATION
+---
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+## 🗓 Week 4 – File Manager & GitHub Import
 
-Completed:
-- [ ] WebSocket server running
-- [ ] Room-based sync
-- [ ] Live cursor tracking
-- [ ] Online users list
+### Goals
+- File system experience
+- Developer productivity features
 
-Developer A:
-- [ ] Cursor UI with usernames
-- [ ] Presence indicators
-- [ ] Live update handling
+### Tasks
+- File explorer UI (folders & files)  
+  **Assigned:** Developer B
 
-Developer B:
-- [ ] Socket room logic
-- [ ] File sync events
-- [ ] Conflict prevention logic
+- Add / Rename / Delete file popups  
+  **Assigned:** Developer A
 
-Issues / Notes:
--
+- Create new file flow (language selection)  
+  **Assigned:** Developer B
 
---------------------------------------------------
+- GitHub connect & repo list UI (dummy data)  
+  **Assigned:** Developer A + Developer B  
+  *(Shared – complex user flow)*
 
-## WEEK 4 – CODE EXECUTION & PREVIEW
+- File state management & UX polish  
+  **Assigned:** Developer B
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+---
 
-Completed:
-- [ ] Python execution
-- [ ] JavaScript execution
-- [ ] Java / C / C++ execution
-- [ ] HTML preview
-- [ ] React build preview
+## 🗓 Week 5 – Main Code Editor (Critical Week)
 
-Developer A:
-- [ ] Terminal UI
-- [ ] Run button
-- [ ] Output display
+### Goals
+- Core editor experience
+- VS Code–like behavior
 
-Developer B:
-- [ ] Execution sandbox
-- [ ] Temp file handling
-- [ ] Cleanup after run
+### Tasks
+- Monaco Editor integration  
+  **Assigned:** Developer A + Developer B  
+  *(Shared – core technical feature)*
 
-Issues / Notes:
--
+- Editor theme customization (dark blue)  
+  **Assigned:** Developer B
 
---------------------------------------------------
+- Line & column indicator (VS Code style)  
+  **Assigned:** Developer A
 
-## WEEK 5 – GITHUB CLONE & PUSH
+- Run / Save / GitHub buttons UI  
+  **Assigned:** Developer A
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+- Mobile editor layout (drawers, icon-only buttons)  
+  **Assigned:** Developer B
 
-Completed:
-- [ ] GitHub repo clone
-- [ ] Clone restriction enforced
-- [ ] Push to same repo
-- [ ] Owner-only push permission
+---
 
-Developer A:
-- [ ] Clone repo UI
-- [ ] Push button UI
-- [ ] Push status feedback
+## 🗓 Week 6 – Collaboration UI & Room Controls
 
-Developer B:
-- [ ] Git clone using OAuth token
-- [ ] Git commit & push logic
-- [ ] Error handling
+### Goals
+- Multi-user awareness
+- Room management
 
-Issues / Notes:
--
+### Tasks
+- Online users button & count pill  
+  **Assigned:** Developer B
 
---------------------------------------------------
+- Users modal (center popup)  
+  **Assigned:** Developer A
 
-## WEEK 6 – STORAGE, DOWNLOAD & CLEANUP
+- User actions (kick, make owner – UI only)  
+  **Assigned:** Developer A
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+- Room settings panel (edit name, password)  
+  **Assigned:** Developer B
 
-Completed:
-- [ ] Persistent workspace storage
-- [ ] ZIP download support
-- [ ] Incremental download logic
-- [ ] Inactivity tracking
-- [ ] Auto-delete after inactivity
-- [ ] Auto-push before delete
+- Delete room confirmation UI  
+  **Assigned:** Developer A
 
-Developer A:
-- [ ] Download project UI
-- [ ] Delete room UI
+---
 
-Developer B:
-- [ ] Cleanup cron job
-- [ ] Workspace deletion logic
+## 🗓 Week 7 – Terminal & UX Polishing
 
-Issues / Notes:
--
+### Goals
+- Developer experience
+- Stability & polish
 
---------------------------------------------------
+### Tasks
+- Terminal drawer UI  
+  **Assigned:** Developer B
 
-## WEEK 7 – TESTING & FINAL POLISH
+- Button loading states & spinners  
+  **Assigned:** Developer A
 
-Status: ☐ Not Started ☐ In Progress ☐ Completed
+- Error states & empty states  
+  **Assigned:** Developer A
 
-Completed:
-- [ ] Bug fixes
-- [ ] UI polish
-- [ ] Permission testing
-- [ ] Security review
-- [ ] Performance optimization
-- [ ] Demo preparation
+- Accessibility improvements  
+  **Assigned:** Developer B
 
-Issues / Notes:
--
+- Cross-browser testing  
+  **Assigned:** Developer A
 
---------------------------------------------------
+---
 
-## FINAL STATUS
+## 🗓 Week 8 – Backend Readiness & Documentation
 
-Project Status:
-☐ Incomplete  
-☐ MVP Completed  
-☐ Fully Completed  
+### Goals
+- Backend preparation
+- Project finalization
 
-Final Notes:
--
+### Tasks
+- Replace console logs with service placeholders  
+  **Assigned:** Developer B
 
---------------------------------------------------
+- API contract notes & comments  
+  **Assigned:** Developer A
 
-End of progress.md
+- Finalize README.md  
+  **Assigned:** Developer A
+
+- Maintain progress.md & contribution docs  
+  **Assigned:** Developer B
+
+- Final UI/UX review & cleanup  
+  **Assigned:** Developer A + Developer B  
+  *(Shared – final quality pass)*
+
+---
+
+## ✅ Completion Criteria
+
+The project is considered complete when:
+- All main flows work smoothly
+- Editor feels production-ready
+- Temporary & permanent room behavior is clear
+- UI is fully responsive
+- Codebase is backend-ready
+- Documentation is complete
+
+---
+
+## 🧠 Working Principle
+
+- One owner per task
+- Shared ownership only for complex features
+- Clean handoffs
+- Product-first mindset
