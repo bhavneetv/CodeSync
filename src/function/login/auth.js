@@ -34,10 +34,15 @@ export async function signup(name, email, password) {
 
 }
 
-export async function loginWithGoogle() {
+export async function loginWithGoogle(prov) {
     const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
+        provider: prov,
     });
+    if (error) {
+        console.error("OAuth login error:", error.message);
+    } else {
+        console.log("OAuth login success:", data);
+    }
 }
 
 export async function logout() {

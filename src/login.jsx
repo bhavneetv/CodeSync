@@ -86,7 +86,10 @@ const LoginPage = ({ onSwitchToSignup }) => {
   };
 
   const handleSocialLogin = (provider) => {
-    console.log(`${provider} login`);
+    loginWithGoogle(provider).then(() => {
+      setLoading(false);
+    });
+    // console.log(`${provider} login`);
   };
 
   return (
@@ -267,6 +270,10 @@ const SignupPage = ({ onSwitchToLogin }) => {
   };
 
   const handleSocialLogin = (provider) => {
+    setLoading(true);
+    loginWithGoogle(provider).then(() => {
+      setLoading(false);
+    });
     console.log(`${provider} login`);
   };
 
