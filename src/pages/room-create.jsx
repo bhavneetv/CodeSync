@@ -4,6 +4,8 @@ import Footer from '../Components/footer';
 import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
+import axios from "axios"
+import { useNavigate } from 'react-router-dom';
 
 const RoomCreate = () => {
   const [view, setView] = useState('main'); // main, create, join
@@ -13,6 +15,8 @@ const RoomCreate = () => {
   const [roomCode, setRoomCode] = useState('');
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  const navigate = useNavigate();
 
   const handleCreateRoom = async () => {
     setLoading(true);
@@ -30,19 +34,39 @@ const RoomCreate = () => {
       }
     })();
   }, []);
-  const handleJoinNext = () => {
-    if (!showPasswordInput) {
-      console.log('Room code entered:', roomCode);
-      setShowPasswordInput(true);
-    } else {
-      setLoading(true);
-      console.log('Joining room:', { roomCode, roomPassword });
-      setTimeout(() => {
-        setLoading(false);
-        console.log('Joined room successfully');
-      }, 2000);
-    }
-  };
+  // const handleJoinNext = () => {
+  //   if (!showPasswordInput) {
+  //     console.log('Room code entered:', roomCode);
+  //     setShowPasswordInput(true);
+  //   } else {
+  //     setLoading(true);
+  //     console.log('Joining room:', { roomCode, roomPassword });
+  //     setTimeout(() => {
+  //       setLoading(false);
+  //       console.log('Joined room successfully');
+  //     }, 2000);
+  //   }
+  // };
+
+const handleJoinNext = async () => {
+
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('room_code', roomCode)
+    .eq('room_password', roomPassword)
+    .single(); 
+
+  if (error || !data) {
+    console.error('Invalid Room Code or Password', error);
+
+    navigate("/create-room");
+  } else {
+    console.log('Successfully joined room:', data);
+
+    navigate("/editor");
+  }
+};
 
   const handleSoloCode = () => {
     console.log('Solo Mode');
@@ -154,7 +178,7 @@ const RoomCreate = () => {
                 >
                   <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Create a {isLoggedIn ? '' : 'Temporary '} Room</h2>
                   <p className="text-gray-500 text-xs sm:text-sm text-center mb-6 sm:mb-8">
-                    { isLoggedIn ? '' : 'Temporary rooms expire after 24 hours. Login to create permanent rooms with extra features.'  }
+                    {isLoggedIn ? '' : 'Temporary rooms expire after 24 hours. Login to create permanent rooms with extra features.'}
                   </p>
 
                   <div className="space-y-3 sm:space-y-4 mb-5 sm:mb-6">
@@ -306,7 +330,7 @@ const RoomCreate = () => {
           transition={{ delay: 0.5 }}
           className="absolute bottom-6 sm:bottom-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4"
         >
-         {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
+          {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
         </motion.p>
 
       </div>
