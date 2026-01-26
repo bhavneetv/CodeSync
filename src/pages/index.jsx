@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import Navbar from '../Components/navbar.jsx';
 import Footer from '../Components/footer.jsx';
+import { Link } from 'react-router-dom';
 
 const LandingPage = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -119,7 +120,9 @@ const LandingPage = () => {
               Create rooms, share code, and build together.
             </p>
             <div className="flex flex-col sm:flex-row gap-4">
+             <Link to="/create-room">
               <motion.button
+              
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 className="px-8 py-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg hover:shadow-blue-500/50 transition-all"
@@ -127,6 +130,7 @@ const LandingPage = () => {
                 <Plus className="w-6 h-6" />
                 <span>Create Your First Room</span>
               </motion.button>
+             </Link>
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}

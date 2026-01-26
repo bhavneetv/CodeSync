@@ -5,6 +5,8 @@ import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
 import { createRoom } from '../function/rooms/room-main.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
+import axios from "axios"
+import { useNavigate } from 'react-router-dom';
 
 const RoomCreate = () => {
   const [view, setView] = useState('main'); // main, create, join
@@ -17,6 +19,8 @@ const RoomCreate = () => {
 
 
   // Create Room 
+  const navigate = useNavigate();
+
   const handleCreateRoom = async () => {
     setLoading(true);
     const result = await createRoom(roomName, roomPassword);
@@ -37,19 +41,39 @@ const RoomCreate = () => {
       }
     })();
   }, []);
-  const handleJoinNext = () => {
-    if (!showPasswordInput) {
-      console.log('Room code entered:', roomCode);
-      setShowPasswordInput(true);
-    } else {
-      setLoading(true);
-      console.log('Joining room:', { roomCode, roomPassword });
-      setTimeout(() => {
-        setLoading(false);
-        console.log('Joined room successfully');
-      }, 2000);
-    }
-  };
+  // const handleJoinNext = () => {
+  //   if (!showPasswordInput) {
+  //     console.log('Room code entered:', roomCode);
+  //     setShowPasswordInput(true);
+  //   } else {
+  //     setLoading(true);
+  //     console.log('Joining room:', { roomCode, roomPassword });
+  //     setTimeout(() => {
+  //       setLoading(false);
+  //       console.log('Joined room successfully');
+  //     }, 2000);
+  //   }
+  // };
+
+const handleJoinNext = async () => {
+
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('room_code', roomCode)
+    .eq('room_password', roomPassword)
+    .single(); 
+
+  if (error || !data) {
+    console.error('Invalid Room Code or Password', error);
+
+    navigate("/create-room");
+  } else {
+    console.log('Successfully joined room:', data);
+
+    navigate("/editor");
+  }
+};
 
   const handleSoloCode = () => {
     console.log('Solo Mode');
