@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Footer from '../Components/footer';
 import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
+import { createRoom } from '../function/rooms/room-main.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
 
 const RoomCreate = () => {
@@ -14,13 +15,19 @@ const RoomCreate = () => {
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
+
+  // Create Room 
   const handleCreateRoom = async () => {
     setLoading(true);
-    console.log('Creating room:', { roomName, roomPassword });
-    setTimeout(() => {
-      setLoading(false);
-      console.log('Room created successfully');
-    }, 2000);
+    const result = await createRoom(roomName, roomPassword);
+    setLoading(false);
+    if (result.success) {
+      if (result.type === "permanent") window.location.href = `/upload?roomId=${result.roomLink}`;
+      else window.location.href = `/editor?roomId=${result.roomLink}`;
+    }
+    else {
+      console.error('Failed to create room : ', result.message);
+    }
   };
   useEffect(() => {
     (async () => {
@@ -154,7 +161,7 @@ const RoomCreate = () => {
                 >
                   <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Create a {isLoggedIn ? '' : 'Temporary '} Room</h2>
                   <p className="text-gray-500 text-xs sm:text-sm text-center mb-6 sm:mb-8">
-                    { isLoggedIn ? '' : 'Temporary rooms expire after 24 hours. Login to create permanent rooms with extra features.'  }
+                    {isLoggedIn ? '' : 'Temporary rooms expire after 24 hours. Login to create permanent rooms with extra features.'}
                   </p>
 
                   <div className="space-y-3 sm:space-y-4 mb-5 sm:mb-6">
@@ -306,7 +313,7 @@ const RoomCreate = () => {
           transition={{ delay: 0.5 }}
           className="absolute bottom-6 sm:bottom-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4"
         >
-         {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
+          {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
         </motion.p>
 
       </div>

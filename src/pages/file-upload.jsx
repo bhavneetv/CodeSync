@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import supabase from '../supabaseClinet';
+import { isLoggin } from '../function/login/isLoggin';
+import { findRoomname } from '../function/rooms/upload-page';
 import { FileText, Github, Plus, ArrowLeft, ArrowRight, Trash2, Loader2, Check } from 'lucide-react';
 
 const FileUploadpage = () => {
@@ -10,10 +13,51 @@ const FileUploadpage = () => {
   const [selectedRepo, setSelectedRepo] = useState('');
   const [loading, setLoading] = useState(false);
   const [githubConnected, setGithubConnected] = useState(false);
+  const [roomName1, setroomName] = useState(null);
+  const [roomCode1, setRoomCode] = useState('');
 
-  // Dummy room data
-  const roomName = "My Coding Session";
-  const roomCode = "ABC-123-XYZ";
+
+  //check if user is logged in and fetch room info
+  useEffect(() => {
+    isLoggina();
+    fetch();
+  }, []);
+
+  //get room info and validate room link from URL
+  const roomLink = window.location.href.split('?')[1].split('=')[1];
+
+  // fetch room info like name and code
+
+  const fetch = async () => {
+    const roomInfo = await findRoomname(roomLink);
+    if (!roomInfo) {
+      window.location.href = '/create-room';
+      return false;
+    }
+    if (roomInfo.type !== 'permanent') {
+      window.location.href = '/create-room';
+      return null;
+    }
+    if (!roomInfo.is_room_new) {
+      window.location.href = `/editor?roomId=${roomLink}`;
+      return null;
+    }
+    setroomName(roomInfo.room_name);
+    setRoomCode(roomInfo.room_code);
+
+  }
+
+  //redirect to login if not logged in
+  const isLoggina = async () => {
+    const loggedIn = await isLoggin();
+    if (!loggedIn) {
+      window.location.href = '/login';
+      return
+    }
+  }
+    
+  const roomName = roomName1 || 'Loading...';
+  const roomCode = roomCode1 || 'Loading...';
 
   // File type options
   const fileTypes = [
@@ -122,7 +166,7 @@ const FileUploadpage = () => {
       {/* Main Content */}
       <div className="flex-1 flex items-center justify-center px-4 py-12">
         <motion.div
-          animate={{ 
+          animate={{
             width: getCardWidth(),
             maxWidth: '90vw'
           }}
@@ -196,11 +240,10 @@ const FileUploadpage = () => {
                             whileHover={{ scale: 1.03 }}
                             whileTap={{ scale: 0.97 }}
                             onClick={() => setSelectedFileType(type.ext)}
-                            className={`p-3 sm:p-4 rounded-xl font-medium transition-all border text-sm sm:text-base ${
-                              selectedFileType === type.ext
-                                ? 'bg-blue-500/20 border-blue-500 text-blue-300'
-                                : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
-                            }`}
+                            className={`p-3 sm:p-4 rounded-xl font-medium transition-all border text-sm sm:text-base ${selectedFileType === type.ext
+                              ? 'bg-blue-500/20 border-blue-500 text-blue-300'
+                              : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                              }`}
                           >
                             <div className="text-2xl mb-1">{type.icon}</div>
                             <div>{type.name}</div>
@@ -355,11 +398,10 @@ const FileUploadpage = () => {
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
                         onClick={() => setSelectedRepo(repo.name)}
-                        className={`w-full p-4 rounded-xl transition-all border text-left ${
-                          selectedRepo === repo.name
-                            ? 'bg-blue-500/20 border-blue-500'
-                            : 'bg-white/5 border-white/10 hover:bg-white/10'
-                        }`}
+                        className={`w-full p-4 rounded-xl transition-all border text-left ${selectedRepo === repo.name
+                          ? 'bg-blue-500/20 border-blue-500'
+                          : 'bg-white/5 border-white/10 hover:bg-white/10'
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <div>
