@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Footer from '../Components/footer';
 import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
+import { createRoom } from '../function/rooms/room-main.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
 import axios from "axios"
 import { useNavigate } from 'react-router-dom';
@@ -20,14 +21,22 @@ const RoomCreate = () => {
   // Create Room 
   const navigate = useNavigate();
 
-  
+
+  // handle create room 
   const handleCreateRoom = async () => {
     setLoading(true);
-    console.log('Creating room:', { roomName, roomPassword });
-    setTimeout(() => {
-      setLoading(false);
-      console.log('Room created successfully');
-    }, 2000);
+      // function that create Room 
+    const result = await createRoom(roomName, roomPassword);
+    setLoading(false);
+    // check if room is created successfully
+    if (result.success) {
+      // redirect to upload page with room link
+      if (result.type === "permanent") window.location.href = `/upload?roomId=${result.roomLink}`;
+      else window.location.href = `/editor?roomId=${result.roomLink}`;
+    }
+    else {
+      console.error('Failed to create room : ', result.message);
+    }
   };
   useEffect(() => {
     (async () => {
@@ -51,25 +60,25 @@ const RoomCreate = () => {
   //   }
   // };
 
-const handleJoinNext = async () => {
+  const handleJoinNext = async () => {
 
-  const { data, error } = await supabase
-    .from('rooms')
-    .select('*')
-    .eq('room_code', roomCode)
-    .eq('room_password', roomPassword)
-    .single(); 
+    const { data, error } = await supabase
+      .from('rooms')
+      .select('*')
+      .eq('room_code', roomCode)
+      .eq('room_password', roomPassword)
+      .single();
 
-  if (error || !data) {
-    console.error('Invalid Room Code or Password', error);
+    if (error || !data) {
+      console.error('Invalid Room Code or Password', error);
 
-    navigate("/create-room");
-  } else {
-    console.log('Successfully joined room:', data);
+      navigate("/create-room");
+    } else {
+      console.log('Successfully joined room:', data);
 
-    navigate("/editor");
-  }
-};
+      navigate("/editor");
+    }
+  };
 
   const handleSoloCode = () => {
     console.log('Solo Mode');
