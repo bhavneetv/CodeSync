@@ -16,8 +16,8 @@ const RoomCreate = () => {
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-  const navigate = useNavigate();
 
+  
   const handleCreateRoom = async () => {
     setLoading(true);
     console.log('Creating room:', { roomName, roomPassword });
