@@ -25,7 +25,7 @@ const RoomCreate = () => {
   // handle create room 
   const handleCreateRoom = async () => {
     setLoading(true);
-      // function that create Room 
+    // function that create Room 
     const result = await createRoom(roomName, roomPassword);
     setLoading(false);
     // check if room is created successfully
@@ -80,9 +80,18 @@ const RoomCreate = () => {
     }
   };
 
+
+  // handle solo code 
   const handleSoloCode = () => {
-    console.log('Solo Mode');
-    console.log('Navigating to editor...');
+    setLoading(true);
+    createRoom('Solo Room').then((result) => {
+      setLoading(false);
+      console.log('Room created for Solo Coding:', result);
+      if (result.success) window.location.href = `/editor?roomId=${result.roomLink}`
+      else window.location.href = `/editor?roomId=${result.roomLink}`
+      // navigate('/editor');
+
+    });
   };
 
   const handleBack = () => {
