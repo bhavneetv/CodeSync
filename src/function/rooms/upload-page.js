@@ -25,21 +25,4 @@ export async function isRoomValid(roomLink) {
     else return true;
 }
 
-export const handleJoinNext =  async(roomCode , roomPassword)=>{
-      const { data, error } = await supabase
-      .from('rooms')
-      .select('*')
-      .eq('room_code', roomCode)
-      .eq('room_password', roomPassword)
-      .single();
 
-    if (error || !data) {
-      console.error('Invalid Room Code or Password', error);
-
-      navigate("/create-room");
-    } else {
-      console.log('Successfully joined room:', data);
-
-      navigate("/editor");
-    }
-}

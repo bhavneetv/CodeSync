@@ -56,3 +56,39 @@ export async function createRoom(name, password = null) {
         type: roomType
     };
 }
+
+// join room function with password check
+export const handleRoomJoin = async (roomCode, roomPassword = null, passwordCheck = false) => {
+
+    if (!passwordCheck) {
+        const { data, error } = await supabase
+            .from('rooms')
+            .select('*')
+            .eq('room_code', roomCode)
+            .single();
+
+        if (data == null) {
+            return "not found";
+        }
+        if (data.room_password == "") return true;
+        else return false;
+    }
+    else {
+
+        const { data, error } = await supabase
+            .from('rooms')
+            .select('is_room_new')
+            .eq('room_code', roomCode)
+            .eq('room_password', roomPassword)
+            .single();
+
+        if (data == null) {
+            return "found";
+        }
+        if (data.is_room_new == true) return true;
+        else return false;
+    }
+
+
+
+}

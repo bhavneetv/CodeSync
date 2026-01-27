@@ -7,7 +7,7 @@ import { createRoom } from '../function/rooms/room-main.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
 import axios from "axios"
 import { useNavigate } from 'react-router-dom';
-import { handleJoinNext } from '../function/rooms/upload-page.js';
+import { handleRoomJoin } from '../function/rooms/room-main.js';
 
 const RoomCreate = () => {
   const [view, setView] = useState('main'); // main, create, join
@@ -27,7 +27,7 @@ const RoomCreate = () => {
   const handleCreateRoom = async () => {
     setLoading(true);
     // function that create Room 
-    const result = await createRoom(roomName, roomPassword);
+    const result = await createRoom(roomName.trim(), roomPassword);
     setLoading(false);
     // check if room is created successfully
     if (result.success) {
@@ -48,19 +48,55 @@ const RoomCreate = () => {
     })();
   }, []);
 
-  const handleJoinNext = async () => {
 
-    const result = handleJoinNext(roomCode , roomPassword)
-    try {
-      if (result == success){
-        console.log("success")
-      }
-    } catch (error) {
-      console.log(error)
+  // handle join next
+  const handleJoinNext = async () => {
+    if (!showPasswordInput) {
+      console.log('Room code entered:', roomCode);
+
+      // check if room code is valid
+      handleRoomJoin(roomCode.trim(), null, false).then((res) => {
+
+        if (res === false) {
+
+          setShowPasswordInput(true);
+        }
+        else if (res === "not found") {
+          alert('Room not found. Please check the room code and try again.');
+        }
+        else {
+          window.location.href = `/editor?roomId=${roomCode}`;
+        }
+
+
+      }).catch((err) => {
+        console.error('Error joining room:', err);
+      });
+
     }
+    else {
+      setLoading(true);
+      handleRoomJoin(roomCode, roomPassword, true).then((res) => {
+        
+        if (res == true) {
+          window.location.href = `/editor?roomId=${roomCode}`;
+          // window.location.href = `/upload?roomId=${roomCode}`;
+        }
+        else if (res == "found") {
+          alert('Incorrect password. Please try again.');
+          setLoading(false);
+        }
+        else {
+          window.location.href = `/editor?roomId=${roomCode}`;
+        }
+
+      })
+      setTimeout(() => {
+        setLoading(false);
+
+      }, 6000);
     }
   };
-
 
   // handle solo code 
   const handleSoloCode = () => {
