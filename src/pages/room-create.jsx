@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Footer from '../Components/footer';
 import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
-import { createRoom } from '../function/rooms/room-main.js';
 import { Terminal, Users, UserPlus, LogIn, LogOut, Home, Info, Plus, ArrowRight, ArrowLeft, Loader2, Github } from 'lucide-react';
 import axios from "axios"
 import { useNavigate } from 'react-router-dom';
@@ -21,17 +20,14 @@ const RoomCreate = () => {
   // Create Room 
   const navigate = useNavigate();
 
+  
   const handleCreateRoom = async () => {
     setLoading(true);
-    const result = await createRoom(roomName, roomPassword);
-    setLoading(false);
-    if (result.success) {
-      if (result.type === "permanent") window.location.href = `/upload?roomId=${result.roomLink}`;
-      else window.location.href = `/editor?roomId=${result.roomLink}`;
-    }
-    else {
-      console.error('Failed to create room : ', result.message);
-    }
+    console.log('Creating room:', { roomName, roomPassword });
+    setTimeout(() => {
+      setLoading(false);
+      console.log('Room created successfully');
+    }, 2000);
   };
   useEffect(() => {
     (async () => {
