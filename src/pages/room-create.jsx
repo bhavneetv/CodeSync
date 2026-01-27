@@ -17,6 +17,9 @@ const RoomCreate = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
 
+  // Create Room 
+  const navigate = useNavigate();
+
   
   const handleCreateRoom = async () => {
     setLoading(true);
