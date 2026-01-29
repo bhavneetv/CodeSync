@@ -73,9 +73,9 @@ const buildFileTree = (files) => {
   sortNodes(root.children);
   return root;
 };
-=======
+// =======
 import { getRoomFiles, buildFileTreeFromDB } from '../function/files/create-file';
->>>>>>> b47b27695044e30048fac56ca7f9aaadda479072
+// >>>>>>> b47b27695044e30048fac56ca7f9aaadda479072
 
 const fileIcons = {
   js: '📄', jsx: '⚛️', ts: '📘', tsx: '⚛️', py: '🐍',
