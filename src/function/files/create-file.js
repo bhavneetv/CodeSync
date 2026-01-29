@@ -20,10 +20,10 @@ export async function createEncryptedFile(
 
     if (!user) throw new Error("Not authenticated");
 
-    // ✅ NORMALIZE ROOM CODE (CRITICAL)
+
     const normalizedRoomCode = roomCode.trim();
 
-    // ✅ DETERMINISTIC ROOM PATH
+
     const encryptedRoom = hashRoomCode(normalizedRoomCode);
 
     const fileId = crypto.randomUUID();
@@ -48,7 +48,7 @@ export async function createEncryptedFile(
 
     const { error: dbError } = await supabase.from("files").insert({
         user_id: user.id,
-        room_code: encryptedRoom, // ✅ store normalized
+        room_code: encryptedRoom,
         file_name: encrypt(fileName),
         extension: encrypt(extension),
         folder_path: folderPath,
@@ -77,16 +77,17 @@ async function getRoomCode(roomLink) {
 
 
 export async function getRoomFiles(roomCode) {
+    
 
     roomCode = await getRoomCode(roomCode)
-    console.log("rookk code", roomCode);
+
     const normalizedRoomCode = roomCode.trim();
 
-    // ✅ DETERMINISTIC ROOM PATH
+
     const encryptedRoom = hashRoomCode(normalizedRoomCode);
 
-    console.log(encryptedRoom);
-    // 1. Check user login
+
+
     const {
         data: { user },
         error: authError,
@@ -96,22 +97,23 @@ export async function getRoomFiles(roomCode) {
         return { success: false, error: "User not logged in" };
     }
 
-    // 2. Fetch files for the room
+
     const { data, error } = await supabase
         .from("files")
         .select("*")
-        .eq("room_code", roomCode)
+        .eq("room_code", encryptedRoom)
         .order("created_at", { ascending: true });
 
     if (error) {
         return { success: false, error: error.message };
     }
 
-    // 3. Decrypt file names for UI
+
     const files = data.map((file) => ({
         ...file,
         file_name: decrypt(file.file_name),
         extension: decrypt(file.extension),
+        folder_path: decrypt(file.storage_path),
     }));
 
     return {
@@ -136,7 +138,7 @@ export function buildFileTreeFromDB(dbFiles) {
 
         let current = root;
 
-        // Create folders if not exist
+
         for (const folder of folders) {
             let existing = current.children.find(
                 (c) => c.type === "folder" && c.name === folder
@@ -155,13 +157,42 @@ export function buildFileTreeFromDB(dbFiles) {
             current = existing;
         }
 
-        // Add file
+
         current.children.push({
             name: fullName,
             type: "file",
-            content: "", // load later on click
+            content: "",
         });
     }
 
     return root;
+}
+
+
+export async function readFileContent(storagePath) {
+
+    const {
+        data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+        throw new Error("User not authenticated");
+    }
+
+
+    const { data, error } = await supabase.storage
+        .from("user-files")
+        .download(storagePath);
+
+    if (error) {
+        throw new Error("Failed to download file");
+    }
+
+
+    const encryptedText = await data.text();
+
+
+    const decryptedContent = safeDecrypt(encryptedText);
+
+    return decryptedContent;
 }
