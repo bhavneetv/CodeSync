@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import supabase from '../supabaseClinet';
 import { isLoggin } from '../function/login/isLoggin';
 import { findRoomname } from '../function/rooms/upload-page';
+import { createEncryptedFile } from '../function/files/create-file';
 import { FileText, Github, Plus, ArrowLeft, ArrowRight, Trash2, Loader2, Check } from 'lucide-react';
 
 const FileUploadpage = () => {
@@ -55,7 +56,7 @@ const FileUploadpage = () => {
       return
     }
   }
-    
+
   const roomName = roomName1 || 'Loading...';
   const roomCode = roomCode1 || 'Loading...';
 
@@ -76,7 +77,7 @@ const FileUploadpage = () => {
     { id: 3, name: 'file-sharing-app', stars: 56, language: 'Python' }
   ];
 
-  const handleCreateFile = () => {
+  const handleCreateFile = async () => {
     const extension = selectedFileType === 'custom' ? customExtension : selectedFileType;
     console.log({
       fileName,
@@ -84,10 +85,17 @@ const FileUploadpage = () => {
       roomCode
     });
     setLoading(true);
-    setTimeout(() => {
+    createEncryptedFile(roomCode, fileName, extension).then((res) => {
       setLoading(false);
-      console.log('File created successfully');
-    }, 1500);
+      console.log('File created successfully:', res);
+    });
+
+
+
+
+    setLoading(false);
+    console.log('File created successfully');
+    // }, 1500);
   };
 
   const handleConnectGithub = () => {
