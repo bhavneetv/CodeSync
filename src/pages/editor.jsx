@@ -6,6 +6,7 @@ import {
   Maximize2, Minimize2, AlertTriangle, Crown, Shield, UserCircle, LogOut
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
+import { getRoomFiles, buildFileTreeFromDB } from '../function/files/create-file';
 
 // File type icons mapping
 const fileIcons = {
@@ -88,7 +89,15 @@ export default function CodeEditorPage() {
   const [renameModal, setRenameModal] = useState({ show: false, item: null, path: [] });
   const [deleteModal, setDeleteModal] = useState({ show: false, item: null, path: [] });
 
+
   const editorRef = useRef(null);
+  const roomLink = window.location.href.split('?')[1].split('=')[1];
+
+  getRoomFiles(roomLink).then((files) => {
+    console.log('Files:', files);
+    console.log(buildFileTreeFromDB(files.files));
+    
+  });
 
   // Toggle folder expansion
   const toggleFolder = (path) => {
