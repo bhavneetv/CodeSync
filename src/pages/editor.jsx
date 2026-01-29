@@ -96,6 +96,7 @@ export default function CodeEditorPage() {
   getRoomFiles(roomLink).then((files) => {
     console.log('Files:', files);
     console.log(buildFileTreeFromDB(files.files));
+    // setFileTree(buildFileTreeFromDB(files.files));
     
   });
 
