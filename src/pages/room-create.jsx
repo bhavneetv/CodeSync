@@ -4,7 +4,7 @@ import Footer from '../Components/footer';
 import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
 import { createRoom } from '../function/rooms/room-main.js';
-import supabase  from '../supabaseClinet.js'; 
+import supabase  from '../supabaseClient.js'; 
 import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
@@ -102,8 +102,10 @@ const RoomCreate = () => {
         };
       }));
 
-      // 4. Insert into Supabase
-      const { error } = await supabase.from('files').insert(fileInserts);
+      // 4. Insert into Supabase (USING CORRECT TABLE)
+      // FIX: Changed 'files' to 'room_files' to match your SQL schema
+      const { error } = await supabase.from('room_files').insert(fileInserts);
+      
       if (error) throw error;
 
       // 5. Redirect

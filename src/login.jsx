@@ -1,6 +1,6 @@
 import React, { useState, useEffect, use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import supabase from './supabaseClinet';
+import supabase from './supabaseClient.js';
 import { isLoggin } from "./function/login/isLoggin.js";
 
 import { Terminal, Mail, Lock, User, Eye, EyeOff, Loader2, Github, ArrowRight, Chrome } from 'lucide-react';

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import supabase from '../supabaseClinet';
+import supabase from '../supabaseClient';
 import { isLoggin } from '../function/login/isLoggin';
 import { findRoomname } from '../function/rooms/upload-page';
 import { createEncryptedFile } from '../function/files/create-file';

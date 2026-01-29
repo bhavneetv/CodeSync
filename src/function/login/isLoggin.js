@@ -1,4 +1,4 @@
-import supabase from "../../supabaseClinet";
+import supabase from "../../supabaseClient";
 
 export async function isLoggin(val) {
     const { data: { session } } = await supabase.auth.getSession();

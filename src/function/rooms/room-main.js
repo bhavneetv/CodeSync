@@ -1,5 +1,5 @@
 import { link } from "framer-motion/client";
-import supabase from "../../supabaseClinet";
+import supabase from "../../supabaseClient";
 import { isLoggin } from "../login/isLoggin";
 
 

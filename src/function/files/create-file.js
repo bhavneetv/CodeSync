@@ -1,4 +1,4 @@
-import supabase from "../../supabaseClinet";
+import supabase from "../../supabaseClient";
 import { encrypt, hashRoomCode } from "../login/encryption";
 
 

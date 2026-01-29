@@ -1,4 +1,4 @@
-import supabase from "../../supabaseClinet";
+import supabase from "../../supabaseClient";
 
 
 // function to find room by room link

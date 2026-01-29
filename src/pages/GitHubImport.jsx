@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import  supabase from '../supabaseClinet'; 
+import  supabase from '../supabaseClient'; 
 
 const GitHubImport = ({ roomId }) => { // Pass the current Room ID as a prop
   const [repos, setRepos] = useState([]);

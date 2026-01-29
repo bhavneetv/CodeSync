@@ -1,4 +1,4 @@
-import supabase from "../../supabaseClinet.js";
+import supabase from "../../supabaseClient.js";
 
 export async function login(email, password) {
     const { data, error } = await supabase.auth.signInWithPassword({
@@ -62,7 +62,7 @@ export async function loginWithGithub() {
     provider: 'github',
     options: {
       scopes: 'repo', 
-      redirectTo: window.location.origin + '/dashboard'
+      redirectTo: window.location.origin + '/'
     },
   });
   return { data, error };

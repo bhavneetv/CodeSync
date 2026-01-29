@@ -7,7 +7,7 @@ import {
   CheckCircle, Cloud
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
-import  supabase  from '../supabaseClinet';
+import  supabase  from '../supabaseClient';
 import { debounce } from 'lodash'; // You might need to install lodash: npm i lodash
 
 // --- Helper: Convert Supabase flat files to Nested Tree ---
