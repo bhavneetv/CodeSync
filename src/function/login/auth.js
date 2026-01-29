@@ -55,3 +55,15 @@ export async function getUser() {
     return session;
 
 }
+
+
+export async function loginWithGithub() {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'github',
+    options: {
+      scopes: 'repo', 
+      redirectTo: window.location.origin + '/dashboard'
+    },
+  });
+  return { data, error };
+}

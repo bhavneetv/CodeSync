@@ -1,5 +1,5 @@
 import supabase from "../../supabaseClinet";
-import { encrypt , hashRoomCode } from "../login/encryption";
+import { encrypt, hashRoomCode } from "../login/encryption";
 
 
 export async function createEncryptedFile(
