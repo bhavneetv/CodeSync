@@ -88,6 +88,9 @@ const FileUploadpage = () => {
     createEncryptedFile(roomCode, fileName, extension).then((res) => {
       setLoading(false);
       console.log('File created successfully:', res);
+      // if (res.success == true) {
+      //   window.location.href = `/editor?roomId=${roomLink}`;
+      // }
     });
 
 

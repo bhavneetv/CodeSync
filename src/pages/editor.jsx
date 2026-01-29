@@ -7,6 +7,7 @@ import {
   CheckCircle, Cloud
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
+// <<<<<<< HEAD
 import  supabase  from '../supabaseClient';
 import { debounce } from 'lodash'; // You might need to install lodash: npm i lodash
 
@@ -72,6 +73,9 @@ const buildFileTree = (files) => {
   sortNodes(root.children);
   return root;
 };
+=======
+import { getRoomFiles, buildFileTreeFromDB } from '../function/files/create-file';
+>>>>>>> b47b27695044e30048fac56ca7f9aaadda479072
 
 const fileIcons = {
   js: '📄', jsx: '⚛️', ts: '📘', tsx: '⚛️', py: '🐍',
@@ -116,7 +120,15 @@ export default function CodeEditorPage() {
   const [createFileModal, setCreateFileModal] = useState({ show: false, parentPath: [] });
   const [newFileName, setNewFileName] = useState('');
 
+
   const editorRef = useRef(null);
+  const roomLink = window.location.href.split('?')[1].split('=')[1];
+
+  getRoomFiles(roomLink).then((files) => {
+    console.log('Files:', files);
+    console.log(buildFileTreeFromDB(files.files));
+    
+  });
 
   // --- 1. FETCH FILES ---
   const fetchRoomData = async () => {
