@@ -1,7 +1,7 @@
-import supabase from "../../supabaseClient";
 import { enc } from "crypto-js";
+import { get } from "lodash";
+import supabase from "../../supabaseClient";
 import { encrypt, hashRoomCode, decrypt } from "../login/encryption";
-// >>>>>>> b47b27695044e30048fac56ca7f9aaadda479072
 
 export async function createEncryptedFile(
     roomCode,
@@ -9,154 +9,131 @@ export async function createEncryptedFile(
     extension,
     folderPath = ""
 ) {
-    const {
-        data: { user },
-    } = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("Not logged in");
 
-    if (!user) throw new Error("Not authenticated");
-
-
-    const normalizedRoomCode = roomCode.trim();
-
-
-    const encryptedRoom = hashRoomCode(normalizedRoomCode);
-
+    const roomHash = hashRoomCode(roomCode.trim());
     const fileId = crypto.randomUUID();
     const encryptedFileName = `${fileId}.enc`;
 
-    const basePath = encryptedRoom;
 
-    const fullPath = folderPath
-        ? `${basePath}/${folderPath}/${encryptedFileName}`
-        : `${basePath}/${encryptedFileName}`;
+    const storagePath = folderPath
+        ? `${roomHash}/${folderPath}/${encryptedFileName}`
+        : `${roomHash}/${encryptedFileName}`;
 
-    const encryptedContent = encrypt("");
+    const encryptedContent = encrypt("HELLO_TEST_123");
 
+
+    // ✅ FIX: convert string → Blob
+    const fileBlob = new Blob([encryptedContent], {
+        type: "text/plain",
+    });
+
+    // Upload to storage
     const { error: uploadError } = await supabase.storage
         .from("user-files")
-        .upload(fullPath, encryptedContent, {
+        .upload(storagePath, fileBlob, {
             contentType: "text/plain",
             upsert: false,
         });
 
-    if (uploadError) throw uploadError;
+    if (uploadError) {
+        console.error("Upload error:", uploadError);
+        throw uploadError;
+    }
 
-    const { error: dbError } = await supabase.from("files").insert({
-        user_id: user.id,
-        room_code: encryptedRoom,
-        file_name: encrypt(fileName),
-        extension: encrypt(extension),
-        folder_path: folderPath,
-        storage_path: fullPath,
-    });
+    // Save metadata
+    const { data, error: dbError } = await supabase
+        .from("files")
+        .insert({
+            user_id: user.id,
+            room_code: roomHash,
+            file_name: encrypt(fileName),
+            extension: encrypt(extension),
+            folder_path: folderPath,
+            storage_path: storagePath,
+        })
+        .select()
+        .single();
 
-    if (dbError) throw dbError;
+    if (dbError) {
+        console.error("DB error:", dbError);
+        throw dbError;
+    }
 
     return {
         success: true,
-        roomHash: encryptedRoom,
-        storagePath: fullPath,
+        message: "File created successfully",
+        data,
     };
 }
+
+
 
 async function getRoomCode(roomLink) {
     const { data, error } = await supabase
         .from("rooms")
         .select("room_code")
-        .eq("room_link", roomLink)
-        .single();
-    if (error) return null;
-    return data.room_code;
+        .eq("room_link", roomLink).single();
+    if (error) throw error;
+    return data.room_code
 }
 
-
-
 export async function getRoomFiles(roomCode) {
-    
-
-    roomCode = await getRoomCode(roomCode)
-
-    const normalizedRoomCode = roomCode.trim();
-
-
-    const encryptedRoom = hashRoomCode(normalizedRoomCode);
-
-
-
-    const {
-        data: { user },
-        error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-        return { success: false, error: "User not logged in" };
-    }
-
+    const roomHash = hashRoomCode(await getRoomCode(roomCode));
 
     const { data, error } = await supabase
         .from("files")
         .select("*")
-        .eq("room_code", encryptedRoom)
-        .order("created_at", { ascending: true });
+        .eq("room_code", roomHash);
 
-    if (error) {
-        return { success: false, error: error.message };
-    }
+    if (error) throw error;
 
-
-    const files = data.map((file) => ({
-        ...file,
-        file_name: decrypt(file.file_name),
+    return data.map(file => ({
+        id: file.id,
+        name: decrypt(file.file_name),
         extension: decrypt(file.extension),
-        folder_path: decrypt(file.storage_path),
+        folderPath: file.folder_path,
+        storagePath: file.storage_path,
     }));
-
-    return {
-        success: true,
-        files,
-    };
 }
 
-
-export function buildFileTreeFromDB(dbFiles) {
+export function buildFileTree(files) {
     const root = {
-        name: "my-project",
+        name: "project",
         type: "folder",
         isExpanded: true,
         children: [],
     };
 
-    for (const file of dbFiles) {
-        const { file_name, extension, folder_path } = file;
-        const fullName = `${file_name}.${extension}`;
-        const folders = folder_path ? folder_path.split("/") : [];
-
+    for (const file of files) {
+        const folders = file.folderPath ? file.folderPath.split("/") : [];
         let current = root;
 
-
         for (const folder of folders) {
-            let existing = current.children.find(
-                (c) => c.type === "folder" && c.name === folder
+            let node = current.children.find(
+                c => c.type === "folder" && c.name === folder
             );
 
-            if (!existing) {
-                existing = {
+            if (!node) {
+                node = {
                     name: folder,
                     type: "folder",
                     isExpanded: false,
                     children: [],
                 };
-                current.children.push(existing);
+                current.children.push(node);
             }
 
-            current = existing;
+            current = node;
         }
 
-
         current.children.push({
-            name: fullName,
+            id: file.id,
+            name: `${file.name}${file.extension}`,
             type: "file",
-            content: "",
+            fullPath: file.storagePath,
+            content: null,
         });
     }
 
@@ -164,30 +141,38 @@ export function buildFileTreeFromDB(dbFiles) {
 }
 
 
-export async function readFileContent(storagePath) {
 
-    const {
-        data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-        throw new Error("User not authenticated");
-    }
-
+export async function readEncryptedFile(storagePath) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("Not authenticated");
 
     const { data, error } = await supabase.storage
         .from("user-files")
         .download(storagePath);
 
     if (error) {
-        throw new Error("Failed to download file");
+        console.error("Storage download error:", error);
+        throw error;
     }
 
+    if (!data) {
+        throw new Error("No file data returned");
+    }
 
     const encryptedText = await data.text();
 
+    // 🔑 Decrypt
+    const decrypted = decrypt(encryptedText);
 
-    const decryptedContent = safeDecrypt(encryptedText);
+    // ✅ EMPTY FILE IS VALID
+    if (decrypted === "") {
+        return "Empty file";
+    }
 
-    return decryptedContent;
+    // ❌ Only error if decrypt failed AND encryptedText exists
+    if (!decrypted && encryptedText) {
+        throw new Error("Decryption failed (wrong key or corrupted file)");
+    }
+
+    return decrypted;
 }
