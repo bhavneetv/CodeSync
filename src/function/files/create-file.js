@@ -1,10 +1,5 @@
-// <<<<<<< HEAD
 import supabase from "../../supabaseClient";
-import { encrypt, hashRoomCode } from "../login/encryption";
-
-// =======
 import { enc } from "crypto-js";
-import supabase from "../../supabaseClinet";
 import { encrypt, hashRoomCode, decrypt } from "../login/encryption";
 // >>>>>>> b47b27695044e30048fac56ca7f9aaadda479072
 
