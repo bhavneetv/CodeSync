@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 // import { getRoomFiles, buildFileTreeFromDB } from '../function/files/create-file';
-import { getRoomFiles, buildFileTree, readEncryptedFile } from '../function/files/create-file';
+import { getRoomFiles, buildFileTree, readEncryptedFile, handleCreateFolder, createEncryptedFile } from '../function/files/create-file';
 import { get } from 'lodash';
 
 // Modern file type icons mapping
@@ -41,33 +41,6 @@ const getFileIcon = (filename) => {
 };
 
 // Initial file tree structure
-let initialFileTree = {
-  name: 'my-project',
-  type: 'folder',
-  isExpanded: true,
-  children: [
-    {
-      name: 'src',
-      type: 'folder',
-      isExpanded: false,
-      children: [
-        { name: 'index.js', type: 'file', content: '// Main entry point\nconsole.log("Hello World");' },
-        { name: 'App.jsx', type: 'file', content: 'import React from "react";\n\nfunction App() {\n  return <div>Hello React</div>;\n}\n\nexport default App;' },
-        { name: 'styles.css', type: 'file', content: '* {\n  margin: 0;\n  padding: 0;\n}' }
-      ]
-    },
-    {
-      name: 'public',
-      type: 'folder',
-      isExpanded: false,
-      children: [
-        { name: 'index.html', type: 'file', content: '<!DOCTYPE html>\n<html>\n  <head>\n    <title>My App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n  </body>\n</html>' }
-      ]
-    },
-    { name: 'README.md', type: 'file', content: '# My Project\n\nWelcome to my project!' },
-    { name: 'package.json', type: 'file', content: '{\n  "name": "my-project",\n  "version": "1.0.0"\n}' }
-  ]
-};
 
 // Mock users data
 const mockUsers = [
@@ -76,6 +49,14 @@ const mockUsers = [
   { id: 3, name: 'Charlie Brown', role: 'editor', online: false, avatar: '👨‍🎨' },
   { id: 4, name: 'Guest User', role: 'guest', online: true, avatar: '👤' }
 ];
+
+const initialFileTree = {
+  name: 'Loading',
+  type: 'folder',
+  isExpanded: true,
+  children: [
+  ]
+};
 
 export default function CodeEditorPage() {
   const [roomType, setRoomType] = useState('collaborative'); // 'solo', 'temporary', 'collaborative'
@@ -184,16 +165,116 @@ export default function CodeEditorPage() {
   };
 
   // Create new file
-  const handleCreateFile = (fileName, extension, parentPath) => {
-    console.log('Creating file:', { fileName, extension, parentPath });
+  const handleCreateFile = async (fileName, extension, parentPath) => {
+    try {
+      const folderPath = resolveFolderPath(fileTree, parentPath);
+
+      console.log("Resolved folderPath:", folderPath || "(root)");
+
+      await createEncryptedFile(
+        roomLink,
+        fileName,
+        extension,
+        folderPath
+      );
+
+      const files = await getRoomFiles(roomLink);
+      setFileTree(buildFileTree(files));
+    } catch (err) {
+      console.error("Create file failed:", err);
+    }
+
     setCreateFileModal({ show: false, parentPath: [] });
   };
 
+  const resolveFolderPath = (tree, indexPath) => {
+    if (!indexPath || indexPath.length === 0) return "";
+
+    let current = tree;
+    const parts = [];
+
+    for (const index of indexPath) {
+      if (!current?.children?.[index]) break;
+
+      current = current.children[index];
+
+      if (current.type === "folder") {
+        parts.push(current.name);
+      }
+    }
+
+    return parts.join("/");
+  };
+
+
+
   // Create new folder
   const handleCreateFolder = (folderName, parentPath) => {
-    console.log('Creating folder:', { folderName, parentPath });
+    if (!folderName) return;
+
+    const safePath = normalizeFolderParentPath(fileTree, parentPath);
+
+    const addFolder = (node, path) => {
+      if (!node) return node;
+
+      if (path.length === 0) {
+        const exists = node.children?.some(
+          (c) => c.type === "folder" && c.name === folderName
+        );
+        if (exists) return node;
+
+        return {
+          ...node,
+          isExpanded: true,
+          children: [
+            ...(node.children || []),
+            {
+              name: folderName,
+              type: "folder",
+              isExpanded: false,
+              children: [],
+            },
+          ],
+        };
+      }
+
+      const [idx, ...rest] = path;
+
+      return {
+        ...node,
+        children: node.children.map((child, i) =>
+          i === idx ? addFolder(child, rest) : child
+        ),
+      };
+    };
+
+    setFileTree((prev) => addFolder(prev, safePath));
     setCreateFolderModal({ show: false, parentPath: [] });
   };
+
+
+  const normalizeFolderParentPath = (tree, path) => {
+    if (!path || path.length === 0) return [];
+
+    let current = tree;
+    const normalized = [];
+
+    for (const index of path) {
+      const node = current.children?.[index];
+      if (!node) break;
+
+      if (node.type === "folder") {
+        normalized.push(index);
+        current = node;
+      } else {
+
+        break;
+      }
+    }
+
+    return normalized;
+  };
+
 
   // Rename file/folder
   const handleRename = (newName) => {
@@ -311,8 +392,8 @@ export default function CodeEditorPage() {
               )}
 
               <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${roomType === 'solo' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' :
-                  roomType === 'temporary' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
-                    'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                roomType === 'temporary' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                  'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                 }`}>
                 {roomType.charAt(0).toUpperCase() + roomType.slice(1)}
               </span>
@@ -361,8 +442,8 @@ export default function CodeEditorPage() {
             onClick={handlePushGitHub}
             disabled={roomType === 'solo' || roomType === 'temporary'}
             className={`p-2 rounded-lg transition-all duration-200 ${roomType === 'solo' || roomType === 'temporary'
-                ? 'opacity-40 cursor-not-allowed'
-                : 'hover:bg-violet-500/20 border border-transparent hover:border-violet-500/30'
+              ? 'opacity-40 cursor-not-allowed'
+              : 'hover:bg-violet-500/20 border border-transparent hover:border-violet-500/30'
               }`}
             title="Push to GitHub"
           >
@@ -589,8 +670,8 @@ export default function CodeEditorPage() {
                   <div
                     key={user.id}
                     className={`p-4 rounded-xl transition-all ${user.online
-                        ? 'bg-violet-500/10 border border-violet-500/30'
-                        : 'bg-slate-500/10 border border-slate-500/20 opacity-60'
+                      ? 'bg-violet-500/10 border border-violet-500/30'
+                      : 'bg-slate-500/10 border border-slate-500/20 opacity-60'
                       }`}
                   >
                     <div className="flex items-center gap-3">

@@ -135,19 +135,20 @@ const RoomCreate = () => {
   const handleJoinNext = async () => {
     if (!showPasswordInput) {
       handleRoomJoin(roomCode.trim(), null, false).then((res) => {
-        if (res === false) setShowPasswordInput(true);
-        else if (res === "not found") alert('Room not found.');
-        else window.location.href = `/editor?roomId=${roomCode}`;
+        console.log(res);
+        if (res.res === false) setShowPasswordInput(true);
+        else if (res.res === "not found") alert('Room not found.');
+        else window.location.href = `/editor?roomId=${res.roomLink}`;
       });
     } else {
       setLoading(true);
       handleRoomJoin(roomCode, roomPassword, true).then((res) => {
-        if (res == true) window.location.href = `/editor?roomId=${roomCode}`;
-        else if (res == "found") {
+        if (res.res == true) window.location.href = `/editor?roomId=${roomCode}`;
+        else if (res.res == "found") {
             alert('Incorrect password.');
             setLoading(false);
         }
-        else window.location.href = `/editor?roomId=${roomCode}`;
+        else window.location.href = `/editor?roomId=${res.roomLink}`;
       });
     }
   };

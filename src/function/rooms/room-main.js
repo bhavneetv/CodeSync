@@ -70,8 +70,8 @@ export const handleRoomJoin = async (roomCode, roomPassword = null, passwordChec
         if (data == null) {
             return "not found";
         }
-        if (data.room_password == "") return true;
-        else return false;
+        if (data.room_password == "") return {res:true, roomLink : data.room_link};
+        else return {res:true, roomLink : data.room_link};
     }
     else {
 
@@ -85,8 +85,8 @@ export const handleRoomJoin = async (roomCode, roomPassword = null, passwordChec
         if (data == null) {
             return "found";
         }
-        if (data.is_room_new == true) return true;
-        else return false;
+        if (data.is_room_new == true) return {res:true, roomLink : data.room_link};
+        else return {res:false};
     }
 
 

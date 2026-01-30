@@ -1,18 +1,22 @@
-// createEncryptedFile.js
+
 import { get } from "lodash";
 import supabase from "../../supabaseClient";
 import { encrypt, hashRoomCode, decrypt } from "../login/encryption";
 
+
+// create file
 export async function createEncryptedFile(
     roomCode,
     fileName,
     extension,
+    is_new = false,
     folderPath = ""
+
 ) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("Not logged in");
 
-    const roomHash = hashRoomCode(roomCode.trim());
+    const roomHash = hashRoomCode(await getRoomCode(roomCode));
     const fileId = crypto.randomUUID();
     const encryptedFileName = `${fileId}.enc`;
 
@@ -24,12 +28,12 @@ export async function createEncryptedFile(
     const encryptedContent = encrypt("HELLO_TEST_123");
 
 
-    // ✅ FIX: convert string → Blob
+
     const fileBlob = new Blob([encryptedContent], {
         type: "text/plain",
     });
 
-    // Upload to storage
+
     const { error: uploadError } = await supabase.storage
         .from("user-files")
         .upload(storagePath, fileBlob, {
@@ -42,7 +46,7 @@ export async function createEncryptedFile(
         throw uploadError;
     }
 
-    // Save metadata
+
     const { data, error: dbError } = await supabase
         .from("files")
         .insert({
@@ -55,6 +59,15 @@ export async function createEncryptedFile(
         })
         .select()
         .single();
+
+    if (is_new) {
+        const { data: re, error } = await supabase.
+            from("rooms").update({
+                is_room_new: false
+            }).eq("room_Link", roomCode)
+    }
+
+
 
     if (dbError) {
         console.error("DB error:", dbError);
@@ -70,6 +83,7 @@ export async function createEncryptedFile(
 
 
 
+// get room code
 async function getRoomCode(roomLink) {
     const { data, error } = await supabase
         .from("rooms")
@@ -79,6 +93,7 @@ async function getRoomCode(roomLink) {
     return data.room_code
 }
 
+// get room files
 export async function getRoomFiles(roomCode) {
     const roomHash = hashRoomCode(await getRoomCode(roomCode));
 
@@ -98,6 +113,7 @@ export async function getRoomFiles(roomCode) {
     }));
 }
 
+// build file tree
 export function buildFileTree(files) {
     const root = {
         name: "project",
@@ -130,7 +146,7 @@ export function buildFileTree(files) {
 
         current.children.push({
             id: file.id,
-            name: `${file.name}${file.extension}`,
+            name: `${file.name}.${file.extension}`,
             type: "file",
             fullPath: file.storagePath,
             content: null,
@@ -141,6 +157,7 @@ export function buildFileTree(files) {
 }
 
 
+// read file
 
 export async function readEncryptedFile(storagePath) {
     const { data: { user } } = await supabase.auth.getUser();
@@ -161,18 +178,62 @@ export async function readEncryptedFile(storagePath) {
 
     const encryptedText = await data.text();
 
-    // 🔑 Decrypt
+
     const decrypted = decrypt(encryptedText);
 
-    // ✅ EMPTY FILE IS VALID
+
     if (decrypted === "") {
-        return "Empty file";
+        return "Start from Here";
     }
 
-    // ❌ Only error if decrypt failed AND encryptedText exists
+
     if (!decrypted && encryptedText) {
         throw new Error("Decryption failed (wrong key or corrupted file)");
     }
 
     return decrypted;
 }
+
+export const handleCreateFolder = (folderName, parentPath) => {
+    if (!folderName) return;
+
+    const addFolder = (node, path) => {
+
+        if (path.length === 0) {
+
+            const exists = node.children?.some(
+                (child) =>
+                    child.type === "folder" && child.name === folderName
+            );
+
+            if (exists) return node;
+
+            return {
+                ...node,
+                isExpanded: true,
+                children: [
+                    ...(node.children || []),
+                    {
+                        name: folderName,
+                        type: "folder",
+                        isExpanded: false,
+                        children: [],
+                    },
+                ],
+            };
+        }
+
+        const [index, ...rest] = path;
+
+        return {
+            ...node,
+            children: node.children.map((child, i) =>
+                i === index ? addFolder(child, rest) : child
+            ),
+        };
+    };
+
+    setFileTree((prevTree) => addFolder(prevTree, parentPath));
+
+    setCreateFolderModal({ show: false, parentPath: [] });
+};
