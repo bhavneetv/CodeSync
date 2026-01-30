@@ -4,18 +4,22 @@ import Footer from '../Components/footer';
 import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
 import { createRoom } from '../function/rooms/room-main.js';
-import supabase  from '../supabaseClient.js'; 
-import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe } from 'lucide-react';
+import supabase from '../supabaseClient.js'; 
+import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe, FileCode, FolderGit2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
-import { loginWithGithub } from '../function/login/auth'; // Import your auth function
+import { loginWithGithub } from '../function/login/auth'; 
 
 const RoomCreate = () => {
-  const [view, setView] = useState('main'); // main, create, join, github
+  // Views: 'main', 'join', 'create_details', 'create_method', 'github_select'
+  const [view, setView] = useState('main'); 
   const [loading, setLoading] = useState(false);
+  
+  // Room Data
   const [roomName, setRoomName] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
   const [roomCode, setRoomCode] = useState('');
+  
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
@@ -36,7 +40,7 @@ const RoomCreate = () => {
 
   // --- GitHub Logic ---
   const handleGithubView = async () => {
-    setView('github');
+    setView('github_select');
     // Get Session & Token
     const { data: { session } } = await supabase.auth.getSession();
     
@@ -61,50 +65,72 @@ const RoomCreate = () => {
     }
   };
 
-  const handleImportRepository = async (repo) => {
+const handleImportRepository = async (repo) => {
     setLoading(true);
-    setImportStatus(`Creating room for ${repo.name}...`);
+    const finalRoomName = roomName.trim() || repo.name; 
+    setImportStatus(`Creating room "${finalRoomName}"...`);
 
     try {
-      // 1. Create the Room first
-      const roomResult = await createRoom(repo.name, ""); // No password for imported rooms by default
-      
+      // 1. Create Room
+      const roomResult = await createRoom(finalRoomName, roomPassword); 
       if (!roomResult.success) throw new Error("Failed to create room");
-      
       const newRoomId = roomResult.roomLink;
       
-      // 2. Fetch Files from GitHub
-      setImportStatus(`Fetching files...`);
+      // 2. Fetch File Tree
+      setImportStatus(`Fetching files from GitHub...`);
       const treeRes = await fetch(`https://api.github.com/repos/${repo.owner.login}/${repo.name}/git/trees/${repo.default_branch}?recursive=1`, {
         headers: { Authorization: `Bearer ${ghToken}` }
       });
       const treeData = await treeRes.json();
 
-      // Filter blobs (files) and limit to 50 to prevent crashing
+      // Filter blobs (files) - Limit to 50
       const filesToFetch = treeData.tree.filter(n => n.type === 'blob').slice(0, 50);
 
       setImportStatus(`Importing ${filesToFetch.length} files...`);
 
-      // 3. Download & Prepare Files
-      const fileInserts = await Promise.all(filesToFetch.map(async (fileNode) => {
-        const contentRes = await fetch(fileNode.url, {
-          headers: { Authorization: `Bearer ${ghToken}` }
-        });
-        const contentData = await contentRes.json();
-        const decodedContent = atob(contentData.content);
+      // 3. Download & Prepare Files (With Binary Check)
+      const filePromises = filesToFetch.map(async (fileNode) => {
+        try {
+            const contentRes = await fetch(fileNode.url, {
+              headers: { Authorization: `Bearer ${ghToken}` }
+            });
+            const contentData = await contentRes.json();
+            
+            // Decode Base64
+            const decodedContent = atob(contentData.content);
 
-        return {
-          room_id: newRoomId, // Use the new room ID
-          file_path: fileNode.path,
-          file_name: fileNode.path.split('/').pop(),
-          content: decodedContent,
-          language: fileNode.path.split('.').pop()
-        };
-      }));
+            // CRITICAL FIX: Check for Null Bytes (\u0000)
+            // If a file has this char, it is binary (image/exe), so we skip it.
+            if (decodedContent.includes('\u0000')) {
+                console.warn(`Skipping binary file: ${fileNode.path}`);
+                return null; 
+            }
 
-      // 4. Insert into Supabase (USING CORRECT TABLE)
-      // FIX: Changed 'files' to 'room_files' to match your SQL schema
-      const { error } = await supabase.from('room_files').insert(fileInserts);
+            return {
+              room_id: newRoomId,
+              file_path: fileNode.path,
+              file_name: fileNode.path.split('/').pop(),
+              content: decodedContent,
+              language: fileNode.path.split('.').pop()
+            };
+        } catch (err) {
+            console.error(`Failed to fetch ${fileNode.path}`, err);
+            return null;
+        }
+      });
+
+      // Wait for all downloads
+      const filesResult = await Promise.all(filePromises);
+      
+      // Filter out the nulls (the binary files we skipped)
+      const validFiles = filesResult.filter(file => file !== null);
+
+      if (validFiles.length === 0) {
+          throw new Error("No valid text files found in this repo.");
+      }
+
+      // 4. Insert into Supabase
+      const { error } = await supabase.from('room_files').insert(validFiles);
       
       if (error) throw error;
 
@@ -118,9 +144,9 @@ const RoomCreate = () => {
       setImportStatus('');
     }
   };
-  // --------------------
 
-  const handleCreateRoom = async () => {
+  // --- Create Empty Room Logic ---
+  const handleCreateEmptyRoom = async () => {
     setLoading(true);
     const result = await createRoom(roomName.trim(), roomPassword);
     setLoading(false);
@@ -160,12 +186,20 @@ const RoomCreate = () => {
     });
   };
 
+  // Navigation Logic
   const handleBack = () => {
-    setView('main');
-    setRoomName('');
-    setRoomPassword('');
-    setRoomCode('');
-    setShowPasswordInput(false);
+    if (view === 'create_method') setView('create_details');
+    else if (view === 'github_select') setView('create_method');
+    else if (view === 'create_details') {
+        setView('main');
+        setRoomName('');
+        setRoomPassword('');
+    }
+    else {
+        setView('main');
+        setRoomCode('');
+        setShowPasswordInput(false);
+    }
     setLoading(false);
     setImportStatus('');
   };
@@ -173,7 +207,7 @@ const RoomCreate = () => {
   const cardVariants = {
     main: { scale: 0.77, width: '100%', maxWidth: '500px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } },
     small: { scale: 0.77, width: '100%', maxWidth: '420px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } },
-    large: { scale: 0.77, width: '100%', maxWidth: '600px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } } // Added for GitHub list
+    large: { scale: 0.77, width: '100%', maxWidth: '600px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } }
   };
 
   return (
@@ -183,13 +217,13 @@ const RoomCreate = () => {
       <div className="flex flex-col items-center justify-center min-h-screen px-4 pt-24 pb-12">
         <motion.div
           variants={cardVariants}
-          animate={view === 'github' ? 'large' : (view === 'main' ? 'main' : 'small')}
+          animate={view === 'github_select' ? 'large' : (view === 'main' ? 'main' : 'small')}
           className="w-full"
         >
           <div className="backdrop-blur-xl bg-black/30 rounded-3xl border border-white/10 shadow-2xl p-6 sm:p-8 md:p-10">
             <AnimatePresence mode="wait">
               
-              {/* === MAIN VIEW === */}
+              {/* === 1. MAIN VIEW === */}
               {view === 'main' && (
                 <motion.div key="main" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }} className="text-center">
                   <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-3 sm:mb-4 bg-gradient-to-r from-blue-300 via-cyan-300 to-blue-300 bg-clip-text text-transparent leading-tight">
@@ -200,15 +234,9 @@ const RoomCreate = () => {
                   </p>
 
                   <div className="space-y-3 sm:space-y-4">
-                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setView('create')} className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 sm:space-x-3 transition-all shadow-lg hover:shadow-blue-500/50">
+                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setView('create_details')} className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 sm:space-x-3 transition-all shadow-lg hover:shadow-blue-500/50">
                       <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
                       <span>Create {isLoggedIn ? '' : 'Temporary '} Room</span>
-                    </motion.button>
-
-                    {/* NEW: Import from GitHub Button */}
-                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleGithubView} className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-gray-800 hover:bg-gray-700 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 sm:space-x-3 transition-all border border-white/10">
-                      <Github className="w-5 h-5 sm:w-6 sm:h-6" />
-                      <span>Import from GitHub</span>
                     </motion.button>
 
                     <div className="flex space-x-3">
@@ -225,9 +253,78 @@ const RoomCreate = () => {
                 </motion.div>
               )}
 
-              {/* === GITHUB VIEW === */}
-              {view === 'github' && (
-                 <motion.div key="github" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
+              {/* === 2. CREATE ROOM: DETAILS (Name & Password) === */}
+              {view === 'create_details' && (
+                <motion.div key="create_details" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
+                  <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Room Details</h2>
+                  <p className="text-gray-500 text-xs sm:text-sm text-center mb-6 sm:mb-8">
+                    Set up your workspace identity
+                  </p>
+                  <div className="space-y-4 mb-6">
+                    <div>
+                      <label className="block text-sm font-medium mb-2 text-gray-400">Room Name <span className="text-red-400">*</span></label>
+                      <input type="text" value={roomName} onChange={(e) => setRoomName(e.target.value)} placeholder="e.g., My Awesome Project" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"/>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2 text-gray-400">Password <span className="text-gray-600">(optional)</span></label>
+                      <input type="password" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} placeholder="Protect your room" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"/>
+                    </div>
+                  </div>
+                  <div className="flex space-x-3">
+                    <button onClick={handleBack} className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10">Back</button>
+                    <button onClick={() => setView('create_method')} disabled={!roomName} className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2">
+                       Next <ArrowRight size={18} />
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* === 3. CREATE ROOM: METHOD (Empty vs GitHub) === */}
+              {view === 'create_method' && (
+                <motion.div key="create_method" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
+                   <h2 className="text-2xl sm:text-3xl font-bold mb-6 text-center">Choose a Starting Point</h2>
+                   
+                   <div className="grid grid-cols-1 gap-4 mb-6">
+                       {/* Option A: Empty Room */}
+                       <div 
+                         onClick={handleCreateEmptyRoom}
+                         className={`p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex items-center gap-4 ${loading ? 'opacity-50 pointer-events-none' : ''}`}
+                       >
+                           <div className="p-3 bg-blue-500/20 rounded-lg text-blue-400">
+                               <FileCode size={24} />
+                           </div>
+                           <div className="flex-1">
+                               <h3 className="font-bold text-lg">Start from Scratch</h3>
+                               <p className="text-sm text-gray-400">Create a blank room and add files manually.</p>
+                           </div>
+                           {loading ? <Loader2 className="animate-spin text-gray-500"/> : <ArrowRight className="text-gray-500"/>}
+                       </div>
+
+                       {/* Option B: GitHub Import */}
+                       <div 
+                         onClick={handleGithubView}
+                         className="p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex items-center gap-4"
+                       >
+                           <div className="p-3 bg-purple-500/20 rounded-lg text-purple-400">
+                               <Github size={24} />
+                           </div>
+                           <div className="flex-1">
+                               <h3 className="font-bold text-lg">Import from GitHub</h3>
+                               <p className="text-sm text-gray-400">Clone a repository directly into this room.</p>
+                           </div>
+                           <ArrowRight className="text-gray-500"/>
+                       </div>
+                   </div>
+
+                   <button onClick={handleBack} className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl">
+                        Back
+                   </button>
+                </motion.div>
+              )}
+
+              {/* === 4. GITHUB SELECT VIEW === */}
+              {view === 'github_select' && (
+                 <motion.div key="github_select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="text-2xl font-bold flex items-center gap-2"><Github/> Select Repository</h2>
                         {loading && <span className="text-xs text-blue-400 animate-pulse">{importStatus || "Loading..."}</span>}
@@ -241,7 +338,7 @@ const RoomCreate = () => {
                             </button>
                         </div>
                     ) : (
-                        <div className="h-[400px] overflow-y-auto pr-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700">
+                        <div className="h-[300px] overflow-y-auto pr-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700">
                            {repos.map(repo => (
                                <div key={repo.id} onClick={() => !loading && handleImportRepository(repo)} 
                                     className={`p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex justify-between items-center ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -254,7 +351,7 @@ const RoomCreate = () => {
                                            <span>{repo.language || 'Plain Text'}</span>
                                        </div>
                                    </div>
-                                   <ArrowRight className="w-5 h-5 text-gray-500"/>
+                                   <FolderGit2 className="w-5 h-5 text-gray-500"/>
                                </div>
                            ))}
                            {repos.length === 0 && !loading && <p className="text-center text-gray-500 mt-10">No repositories found.</p>}
@@ -265,32 +362,6 @@ const RoomCreate = () => {
                         Back
                     </button>
                  </motion.div>
-              )}
-
-              {/* === CREATE VIEW === */}
-              {view === 'create' && (
-                <motion.div key="create" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
-                  <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Create a {isLoggedIn ? '' : 'Temporary '} Room</h2>
-                  <p className="text-gray-500 text-xs sm:text-sm text-center mb-6 sm:mb-8">
-                    {isLoggedIn ? '' : 'Temporary rooms expire after 24 hours. Login to create permanent rooms.'}
-                  </p>
-                  <div className="space-y-4 mb-6">
-                    <div>
-                      <label className="block text-sm font-medium mb-2 text-gray-400">Room Name <span className="text-red-400">*</span></label>
-                      <input type="text" value={roomName} onChange={(e) => setRoomName(e.target.value)} placeholder="Enter room name" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"/>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2 text-gray-400">Password <span className="text-gray-600">(optional)</span></label>
-                      <input type="password" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} placeholder="Enter password" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"/>
-                    </div>
-                  </div>
-                  <div className="flex space-x-3">
-                    <button onClick={handleBack} disabled={loading} className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10 disabled:opacity-50">Back</button>
-                    <button onClick={handleCreateRoom} disabled={!roomName || loading} className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2">
-                      {loading ? <Loader2 className="animate-spin" /> : <><Plus size={18} /> Create</>}
-                    </button>
-                  </div>
-                </motion.div>
               )}
 
               {/* === JOIN VIEW === */}

@@ -1,4 +1,5 @@
 
+import { enc } from "crypto-js";
 import { get } from "lodash";
 import supabase from "../../supabaseClient";
 import { encrypt, hashRoomCode, decrypt } from "../login/encryption";
