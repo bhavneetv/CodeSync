@@ -5,32 +5,30 @@ import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
 import { createRoom } from '../function/rooms/room-main.js';
 import supabase from '../supabaseClient.js';
-import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe, FileCode, FolderGit2 } from 'lucide-react';
+import { Terminal, Users, Plus, ArrowRight, Loader2, Github, Lock, Globe, FileCode, FolderGit2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
 import { loginWithGithub } from '../function/login/auth';
 
 const RoomCreate = () => {
-  // Views: 'main', 'join', 'create_details', 'create_method', 'github_select'
   const [view, setView] = useState('main');
   const [loading, setLoading] = useState(false);
-
+  
   // Room Data
   const [roomName, setRoomName] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
   const [roomCode, setRoomCode] = useState('');
-
+  
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-  // GitHub State
+  // GitHub Data
   const [repos, setRepos] = useState([]);
   const [ghToken, setGhToken] = useState(null);
   const [importStatus, setImportStatus] = useState('');
 
   const navigate = useNavigate();
 
-  // Check Login Status
   useEffect(() => {
     (async () => {
       const loggedIn = await isLoggin();
@@ -41,9 +39,8 @@ const RoomCreate = () => {
   // --- GitHub Logic ---
   const handleGithubView = async () => {
     setView('github_select');
-    // Get Session & Token
     const { data: { session } } = await supabase.auth.getSession();
-
+    
     if (session?.provider_token) {
       setGhToken(session.provider_token);
       fetchRepos(session.provider_token);
@@ -65,46 +62,72 @@ const RoomCreate = () => {
     }
   };
 
+  // --- THE FIXED IMPORT LOGIC ---
   const handleImportRepository = async (repo) => {
+    console.log("--- STARTING IMPORT ---");
     setLoading(true);
-    const finalRoomName = roomName.trim() || repo.name;
-    setImportStatus(`Creating room "${finalRoomName}"...`);
+    
+    // 1. Generate Unique Name
+    const baseName = roomName.trim() || repo.name;
+    const uniqueRoomName = `${baseName}-${Math.floor(Math.random() * 1000)}`;
+    setImportStatus(`Creating room "${uniqueRoomName}"...`);
 
     try {
-      // 1. Create Room
-      const roomResult = await createRoom(finalRoomName, roomPassword);
-      if (!roomResult.success) throw new Error("Failed to create room");
-      const newRoomId = roomResult.roomLink;
+      // 2. Create the Room
+      const roomResult = await createRoom(uniqueRoomName, roomPassword);
+      console.log("Room Created Result:", roomResult); 
 
-      // 2. Fetch File Tree
-      setImportStatus(`Fetching files from GitHub...`);
+      if (!roomResult.success) {
+        throw new Error(roomResult.message || "Failed to create room");
+      }
+
+      // 3. Extract ID & Token (CRITICAL STEP)
+      // Check all possible ID fields
+      const newRoomId = roomResult.roomId || roomResult.roomLink || roomResult.id;
+      // Capture the token so the Editor lets us in
+      const roomToken = roomResult.token; 
+
+      if (!newRoomId) {
+        throw new Error("Room created, but ID is missing.");
+      }
+
+      // 4. Fetch Files from GitHub
+      setImportStatus(`Fetching files...`);
       const treeRes = await fetch(`https://api.github.com/repos/${repo.owner.login}/${repo.name}/git/trees/${repo.default_branch}?recursive=1`, {
         headers: { Authorization: `Bearer ${ghToken}` }
       });
+
+      // Handle Empty Repo (409 Conflict) -> Go straight to editor
+      if (treeRes.status === 409) {
+        console.warn("Repo is empty. Redirecting to editor.");
+        navigate(`/editor?roomId=${newRoomId}&token=${roomToken || ''}`);
+        return;
+      }
+
+      if (!treeRes.ok) throw new Error("GitHub API failed with status: " + treeRes.status);
+      
       const treeData = await treeRes.json();
 
-      // Filter blobs (files) - Limit to 50
-      const filesToFetch = treeData.tree.filter(n => n.type === 'blob').slice(0, 50);
+      // If tree is empty/missing -> Go straight to editor
+      if (!treeData.tree) {
+         navigate(`/editor?roomId=${newRoomId}&token=${roomToken || ''}`);
+         return;
+      }
 
+      // 5. Filter & Download Files
+      const filesToFetch = treeData.tree.filter(n => n.type === 'blob').slice(0, 50);
       setImportStatus(`Importing ${filesToFetch.length} files...`);
 
-      // 3. Download & Prepare Files (With Binary Check)
       const filePromises = filesToFetch.map(async (fileNode) => {
         try {
           const contentRes = await fetch(fileNode.url, {
             headers: { Authorization: `Bearer ${ghToken}` }
           });
           const contentData = await contentRes.json();
-
-          // Decode Base64
           const decodedContent = atob(contentData.content);
 
-          // CRITICAL FIX: Check for Null Bytes (\u0000)
-          // If a file has this char, it is binary (image/exe), so we skip it.
-          if (decodedContent.includes('\u0000')) {
-            console.warn(`Skipping binary file: ${fileNode.path}`);
-            return null;
-          }
+          // Skip binary files (images/PDFs)
+          if (decodedContent.includes('\u0000')) return null; 
 
           return {
             room_id: newRoomId,
@@ -113,33 +136,25 @@ const RoomCreate = () => {
             content: decodedContent,
             language: fileNode.path.split('.').pop()
           };
-        } catch (err) {
-          console.error(`Failed to fetch ${fileNode.path}`, err);
-          return null;
-        }
+        } catch (err) { return null; }
       });
 
-      // Wait for all downloads
       const filesResult = await Promise.all(filePromises);
-
-      // Filter out the nulls (the binary files we skipped)
       const validFiles = filesResult.filter(file => file !== null);
 
-      if (validFiles.length === 0) {
-        throw new Error("No valid text files found in this repo.");
+      // 6. Insert into Supabase
+      if (validFiles.length > 0) {
+        const { error } = await supabase.from('room_files').insert(validFiles);
+        if (error) throw error;
       }
 
-      // 4. Insert into Supabase
-      const { error } = await supabase.from('room_files').insert(validFiles);
-
-      if (error) throw error;
-
-      // 5. Redirect
-      window.location.href = `/editor?roomId=${newRoomId}`;
+      // 7. Success Redirect
+      console.log(`Redirecting to: /editor?roomId=${newRoomId}&token=${roomToken}`);
+      navigate(`/editor?roomId=${newRoomId}&token=${roomToken || ''}`);
 
     } catch (error) {
-      console.error(error);
-      alert("Import Failed: " + error.message);
+      console.error("Import Failed:", error);
+      alert("Error: " + error.message);
       setLoading(false);
       setImportStatus('');
     }
@@ -148,22 +163,18 @@ const RoomCreate = () => {
   // --- Create Empty Room Logic ---
   const handleCreateEmptyRoom = async () => {
     setLoading(true);
-
     try {
       const result = await createRoom(roomName.trim(), roomPassword);
       setLoading(false);
 
       if (!result.success) return;
       
-      if (result.type === "temporary") {
-        window.location.href =
-          `/editor?roomId=${result.roomId}&token=${result.token}`;
-      }
+      // Navigate with Token
+      const targetUrl = result.type === "temporary" 
+          ? `/editor?roomId=${result.roomId}&token=${result.token}`
+          : `/upload?roomId=${result.roomId}&token=${result.token}`;
 
-      else {
-        window.location.href =
-          `/upload?roomId=${result.roomId}&token=${result.token}`;
-      }
+      navigate(targetUrl);
 
     } catch (err) {
       setLoading(false);
@@ -171,41 +182,31 @@ const RoomCreate = () => {
     }
   };
 
-
   const handleJoinNext = async () => {
     if (!showPasswordInput) {
       const res = await handleRoomJoin(roomCode.trim(), null, false);
-
-      if (res.status === "need_password") {
-        setShowPasswordInput(true);
-      } else if (res.status === "not_found") {
-        alert("Room not found.");
-      } else if (res.status === "joined") {
-        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
-      }
+      if (res.status === "need_password") setShowPasswordInput(true);
+      else if (res.status === "not_found") alert("Room not found.");
+      else if (res.status === "joined") navigate(`/editor?roomId=${res.roomId}&token=${res.token}`);
     } else {
       setLoading(true);
-
       const res = await handleRoomJoin(roomCode, roomPassword, true);
-
       if (res.status === "wrong_password") {
         alert("Incorrect password.");
         setLoading(false);
       } else if (res.status === "joined") {
-        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+        navigate(`/editor?roomId=${res.roomId}&token=${res.token}`);
       }
     }
   };
 
-
   const handleSoloCode = () => {
     setLoading(true);
     createRoom('Solo Room').then((result) => {
-      window.location.href = `/editor?roomId=${result.roomLink}`;
+      navigate(`/editor?roomId=${result.roomLink}`);
     });
   };
 
-  // Navigation Logic
   const handleBack = () => {
     if (view === 'create_method') setView('create_details');
     else if (view === 'github_select') setView('create_method');
@@ -239,7 +240,8 @@ const RoomCreate = () => {
           animate={view === 'github_select' ? 'large' : (view === 'main' ? 'main' : 'small')}
           className="w-full"
         >
-          <div className="backdrop-blur-xl bg-black/30 rounded-3xl border border-white/10 shadow-2xl p-6 sm:p-8 md:p-10">
+          {/* Conditional Style: Remove glassmorphism ONLY for 'create_method' view so the dark card shows properly */}
+          <div className={`${view === 'create_method' ? '' : 'backdrop-blur-xl bg-black/30 rounded-3xl border border-white/10 shadow-2xl p-6 sm:p-8 md:p-10'}`}>
             <AnimatePresence mode="wait">
 
               {/* === 1. MAIN VIEW === */}
@@ -298,46 +300,33 @@ const RoomCreate = () => {
                 </motion.div>
               )}
 
-              {/* === 3. CREATE ROOM: METHOD (Empty vs GitHub) === */}
+              {/* === 3. CREATE ROOM: METHOD (Start Coding Card) === */}
               {view === 'create_method' && (
                 <motion.div key="create_method" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
-                  <h2 className="text-2xl sm:text-3xl font-bold mb-6 text-center">Choose a Starting Point</h2>
+                  
+                  {/* Dark "Start Coding" Card */}
+                  <div className="bg-[#0b0e14] p-8 rounded-3xl border border-white/5 shadow-2xl w-full max-w-md mx-auto">
+                    <h2 className="text-4xl font-bold mb-3 text-center bg-gradient-to-r from-blue-400 to-cyan-300 bg-clip-text text-transparent">
+                        Start Coding
+                    </h2>
+                    <p className="text-gray-400 text-sm text-center mb-8">
+                        Create a new file or import from GitHub
+                    </p>
 
-                  <div className="grid grid-cols-1 gap-4 mb-6">
-                    {/* Option A: Empty Room */}
-                    <div
-                      onClick={handleCreateEmptyRoom}
-                      className={`p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex items-center gap-4 ${loading ? 'opacity-50 pointer-events-none' : ''}`}
-                    >
-                      <div className="p-3 bg-blue-500/20 rounded-lg text-blue-400">
-                        <FileCode size={24} />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="font-bold text-lg">Start from Scratch</h3>
-                        <p className="text-sm text-gray-400">Create a blank room and add files manually.</p>
-                      </div>
-                      {loading ? <Loader2 className="animate-spin text-gray-500" /> : <ArrowRight className="text-gray-500" />}
+                    <div className="space-y-4">
+                        <button onClick={handleCreateEmptyRoom} disabled={loading} className="w-full py-4 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-bold text-lg flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-blue-500/25 text-white">
+                            {loading ? <Loader2 className="animate-spin" /> : <Plus size={24} />}
+                            <span>Create New File</span>
+                        </button>
+                        <button onClick={handleGithubView} className="w-full py-4 px-6 bg-[#161b22] hover:bg-[#1c2128] border border-white/10 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all text-white group">
+                            <Github size={24} className="text-white group-hover:text-gray-200" />
+                            <span>Upload from GitHub</span>
+                        </button>
                     </div>
-
-                    {/* Option B: GitHub Import */}
-                    <div
-                      onClick={handleGithubView}
-                      className="p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex items-center gap-4"
-                    >
-                      <div className="p-3 bg-purple-500/20 rounded-lg text-purple-400">
-                        <Github size={24} />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="font-bold text-lg">Import from GitHub</h3>
-                        <p className="text-sm text-gray-400">Clone a repository directly into this room.</p>
-                      </div>
-                      <ArrowRight className="text-gray-500" />
+                    <div className="mt-6 text-center">
+                        <button onClick={handleBack} className="text-sm text-gray-500 hover:text-gray-300 transition-colors">Go Back</button>
                     </div>
                   </div>
-
-                  <button onClick={handleBack} className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl">
-                    Back
-                  </button>
                 </motion.div>
               )}
 
