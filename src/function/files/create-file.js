@@ -25,7 +25,8 @@ export async function createEncryptedFile(
     fileName,
     extension,
     is_new = false,
-    folderPath = ""
+    folderPath = "",
+    rawContent = "HELLO WORLD"
 ) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("Not logged in");
@@ -41,7 +42,7 @@ export async function createEncryptedFile(
         ? `${roomHash}/${folderPath}/${encryptedFileName}`
         : `${roomHash}/${encryptedFileName}`;
 
-    const encryptedContent = encrypt("HELLO_TEST_123");
+    const encryptedContent = encrypt(rawContent);
 
     const fileBlob = new Blob([encryptedContent], {
         type: "text/plain",

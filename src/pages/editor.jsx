@@ -151,7 +151,7 @@ export default function CodeEditorPage() {
       return;
     }
 
-    // setUserRole(data.role);
+    setUserRole(data.role);
     // console.log("ROLE:", data.role);
   };
 

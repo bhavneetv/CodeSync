@@ -9,8 +9,36 @@ import {
 import Navbar from '../Components/navbar.jsx';
 import Footer from '../Components/footer.jsx';
 import { Link } from 'react-router-dom';
+import  supabase  from '../supabaseClient.js';
 
 const LandingPage = () => {
+
+
+  useEffect(() => {
+  const restore = async () => {
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) return;
+
+    const saved = sessionStorage.getItem('github_oauth_state');
+    if (!saved) return;
+
+    const state = JSON.parse(saved);
+    const path = `/upload?roomId=${state.roomId}&token=${state.token}&view=${state.view}`;
+
+    window.history.replaceState(
+      null,
+      '',
+      `/upload?roomId=${state.roomId}&token=${state.token}&view=${state.view}`
+    );
+
+    
+    sessionStorage.removeItem('github_oauth_state');
+    window.location.href = path;
+  };
+
+  restore();
+}, []);
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -32,6 +60,8 @@ const LandingPage = () => {
       [e.target.name]: e.target.value
     });
   };
+
+
 
   // Features data
   const features = [

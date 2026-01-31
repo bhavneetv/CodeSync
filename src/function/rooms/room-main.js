@@ -48,7 +48,7 @@ export async function createRoom(name, password = null) {
     const user = (await supabase.auth.getUser()).data.user;
 
     // Supabase marks anonymous users
-    if (user.is_anonymous) {
+    if (user.is_anonymous ) {
         roomType = "temporary";
         isAnonymous = true;
     }

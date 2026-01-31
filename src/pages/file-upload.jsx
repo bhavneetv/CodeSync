@@ -4,7 +4,9 @@ import supabase from '../supabaseClient';
 import { isLoggin } from '../function/login/isLoggin';
 import { findRoomname } from '../function/rooms/upload-page';
 import { createEncryptedFile } from '../function/files/create-file';
+import { getGithubToken, fetchAllGithubRepos, importRepoContents } from '../function/files/github-handle';
 import { FileText, Github, Plus, ArrowLeft, ArrowRight, Trash2, Loader2, Check } from 'lucide-react';
+import { set } from 'lodash';
 
 const FileUploadpage = () => {
   const [view, setView] = useState('main'); // main, create, github, github-repos, github-confirm
@@ -16,14 +18,62 @@ const FileUploadpage = () => {
   const [githubConnected, setGithubConnected] = useState(false);
   const [roomName1, setroomName] = useState(null);
   const [roomCode1, setRoomCode] = useState('');
+  const [githubRepos, setGithubRepos] = useState([]);
+  const [loadingRepos, setLoadingRepos] = useState(true);
+
 
 
   //check if user is logged in and fetch room info
   useEffect(() => {
+
     isLoggina();
+    const view = new URLSearchParams(window.location.search).get('view');
+    if (view) setView(view);
     fetch();
   }, []);
+  const Spinner = () => (
+    <div className="flex items-center justify-center py-10">
+      <div className="w-8 h-8 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+    </div>
+  );
 
+
+
+  useEffect(() => {
+    setLoading(true);
+    setLoadingRepos(true);
+    const loadRepos = async () => {
+
+      try {
+        const token = await getGithubToken();
+        if (!token) {
+          setError('GitHub not connected');
+          return;
+        }
+
+        const repos = await fetchAllGithubRepos(token);
+
+        setGithubRepos(
+          repos.map(repo => ({
+            id: repo.id,
+            name: repo.name,
+            fullName: repo.full_name,
+            stars: repo.stargazers_count,
+            language: repo.language,
+            private: repo.private,
+            updatedAt: repo.updated_at
+          }))
+        );
+      } catch (e) {
+        setError('Failed to load repositories');
+      } finally {
+        setLoading(false);
+        setLoadingRepos(false);
+      }
+    };
+
+    loadRepos();
+  }, []);
   //get room info and validate room link from URL
   const roomLink = new URLSearchParams(window.location.search).get('roomId');
   // console.log(roomLink);
@@ -72,13 +122,6 @@ const FileUploadpage = () => {
     { name: 'Custom', ext: 'custom', icon: '✨' }
   ];
 
-  // Dummy repositories
-  const repositories = [
-    { id: 1, name: 'codesync-editor', stars: 142, language: 'TypeScript' },
-    { id: 2, name: 'realtime-code-room', stars: 89, language: 'React' },
-    { id: 3, name: 'file-sharing-app', stars: 56, language: 'Python' }
-  ];
-
   const handleCreateFile = async () => {
     const extension = selectedFileType === 'custom' ? customExtension : selectedFileType;
     console.log({
@@ -104,26 +147,48 @@ const FileUploadpage = () => {
 
     // }, 1500);
   };
+  const handleConnectGithub = async () => {
+    const params = new URLSearchParams(window.location.search)
 
-  const handleConnectGithub = () => {
-    console.log('GitHub connected');
-    setGithubConnected(true);
-    setTimeout(() => {
-      setView('github-repos');
-    }, 800);
-  };
+    sessionStorage.setItem(
+      'github_oauth_state',
+      JSON.stringify({
+        roomId: params.get('roomId'),
+        token: params.get('token'),
+        view: "github-repos"
+      })
+    );
 
-  const handleImportRepo = () => {
-    setLoading(true);
-    console.log({
-      selectedRepo,
-      roomCode
+    await supabase.auth.signInWithOAuth({
+      provider: 'github',
+      options: {
+        scopes: 'repo user',
+        redirectTo: "/upload"
+      }
     });
-    setTimeout(() => {
-      setLoading(false);
-      console.log('Repository imported successfully');
-    }, 2000);
   };
+
+  const handleImportRepo = async () => {
+    setLoading(true);
+
+    const { data } = await supabase.auth.getSession();
+    if (!data) throw new Error('GitHub not connected');
+    const token = data.session.provider_token;
+    const owner = data.session.user.user_metadata.user_name;
+    const roomLink = new URLSearchParams(window.location.search).get('roomId');
+
+    await importRepoContents({
+      owner,
+      repo: selectedRepo,
+      roomLink,
+      token
+    });
+
+
+
+    setLoading(false);
+  };
+
 
   const handleBack = () => {
     if (view === 'github-repos') {
@@ -406,35 +471,44 @@ const FileUploadpage = () => {
                 >
                   <h2 className="text-2xl sm:text-3xl font-bold mb-6 text-center">Select Repository</h2>
 
-                  <div className="space-y-3 mb-6">
-                    {repositories.map((repo) => (
-                      <motion.button
-                        key={repo.id}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={() => setSelectedRepo(repo.name)}
-                        className={`w-full p-4 rounded-xl transition-all border text-left ${selectedRepo === repo.name
-                          ? 'bg-blue-500/20 border-blue-500'
-                          : 'bg-white/5 border-white/10 hover:bg-white/10'
-                          }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="font-semibold text-lg flex items-center space-x-2">
-                              <Github className="w-5 h-5" />
-                              <span>{repo.name}</span>
+                  <div className="mb-6 pr-3">
+                    {loadingRepos ? (
+                      <Spinner />
+                    ) : (
+                      <div className="space-y-3 max-h-[420px] overflow-y-auto overflow-x-hidden pr-1 scrollbar-thin scrollbar-thumb-black/20 scrollbar-track-transparent p-5" >
+
+                        {githubRepos.map((repo) => (
+                          <motion.button
+                            key={repo.id}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={() => setSelectedRepo(repo.name)}
+                            className={`w-full p-4 rounded-xl transition-all border text-left ${selectedRepo === repo.name
+                              ? 'bg-blue-500/20 border-blue-500'
+                              : 'bg-white/5 border-white/10 hover:bg-white/10'
+                              }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="font-semibold text-lg flex items-center space-x-2">
+                                  <Github className="w-5 h-5" />
+                                  <span>{repo.name}</span>
+                                </div>
+                                <div className="text-sm text-gray-400 mt-1">
+                                  {repo.language || 'Unknown'} • ⭐ {repo.stars} stars
+                                </div>
+                              </div>
+
+                              {selectedRepo === repo.name && (
+                                <Check className="w-6 h-6 text-blue-400" />
+                              )}
                             </div>
-                            <div className="text-sm text-gray-400 mt-1">
-                              {repo.language} • ⭐ {repo.stars} stars
-                            </div>
-                          </div>
-                          {selectedRepo === repo.name && (
-                            <Check className="w-6 h-6 text-blue-400" />
-                          )}
-                        </div>
-                      </motion.button>
-                    ))}
+                          </motion.button>
+                        ))}
+                      </div>
+                    )}
                   </div>
+
 
                   <div className="flex space-x-3">
                     <motion.button
