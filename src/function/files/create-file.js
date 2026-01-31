@@ -5,6 +5,20 @@ import supabase from "../../supabaseClient";
 import { encrypt, hashRoomCode, decrypt } from "../login/encryption";
 
 
+function generateUUID() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+
+
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+
 // create file
 export async function createEncryptedFile(
     roomCode,
@@ -12,15 +26,16 @@ export async function createEncryptedFile(
     extension,
     is_new = false,
     folderPath = ""
-
 ) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("Not logged in");
 
     const roomHash = hashRoomCode(await getRoomCode(roomCode));
-    const fileId = crypto.randomUUID();
-    const encryptedFileName = `${fileId}.enc`;
 
+
+    const fileId = generateUUID();
+
+    const encryptedFileName = `${fileId}.enc`;
 
     const storagePath = folderPath
         ? `${roomHash}/${folderPath}/${encryptedFileName}`
@@ -28,12 +43,9 @@ export async function createEncryptedFile(
 
     const encryptedContent = encrypt("HELLO_TEST_123");
 
-
-
     const fileBlob = new Blob([encryptedContent], {
         type: "text/plain",
     });
-
 
     const { error: uploadError } = await supabase.storage
         .from("user-files")
@@ -46,7 +58,6 @@ export async function createEncryptedFile(
         console.error("Upload error:", uploadError);
         throw uploadError;
     }
-
 
     const { data, error: dbError } = await supabase
         .from("files")
@@ -61,14 +72,12 @@ export async function createEncryptedFile(
         .select()
         .single();
 
-    if (is_new) {
-        const { data: re, error } = await supabase.
-            from("rooms").update({
-                is_room_new: false
-            }).eq("room_Link", roomCode)
-    }
-
-
+    // if (is_new) {
+    //     await supabase
+    //         .from("rooms")
+    //         .update({ is_room_new: false })
+    //         .eq("room_link", roomCode);
+    // }
 
     if (dbError) {
         console.error("DB error:", dbError);

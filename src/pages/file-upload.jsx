@@ -25,12 +25,14 @@ const FileUploadpage = () => {
   }, []);
 
   //get room info and validate room link from URL
-  const roomLink = window.location.href.split('?')[1].split('=')[1];
+  const roomLink = new URLSearchParams(window.location.search).get('roomId');
+  // console.log(roomLink);
 
   // fetch room info like name and code
 
   const fetch = async () => {
     const roomInfo = await findRoomname(roomLink);
+    // console.log(roomInfo);
     if (!roomInfo) {
       window.location.href = '/create-room';
       return false;
@@ -62,11 +64,11 @@ const FileUploadpage = () => {
 
   // File type options
   const fileTypes = [
-    { name: 'Python', ext: '.py', icon: '🐍' },
-    { name: 'C', ext: '.c', icon: '©️' },
-    { name: 'C++', ext: '.cpp', icon: '➕' },
-    { name: 'Java', ext: '.java', icon: '☕' },
-    { name: 'JavaScript', ext: '.js', icon: '⚡' },
+    { name: 'Python', ext: 'py', icon: '🐍' },
+    { name: 'C', ext: 'c', icon: '©️' },
+    { name: 'C++', ext: 'cpp', icon: '➕' },
+    { name: 'Java', ext: 'java', icon: '☕' },
+    { name: 'JavaScript', ext: 'js', icon: '⚡' },
     { name: 'Custom', ext: 'custom', icon: '✨' }
   ];
 
@@ -85,18 +87,21 @@ const FileUploadpage = () => {
       roomCode
     });
     setLoading(true);
-    createEncryptedFile(roomLink, fileName, extension).then((res) => {
+    createEncryptedFile(roomLink, fileName, extension, true).then((res) => {
       setLoading(false);
-      if (res.success == true) {
-        window.location.href = `/editor?roomId=${roomLink}`;
-      }
+      console.log(res)
+      // if (res.success == true) {
+      //   window.location.href = `/editor?roomId=${roomLink}`;
+      // }
     });
 
 
 
+    setTimeout(() => {
+      setLoading(false);
 
-    setLoading(false);
-    console.log('File created successfully');
+    }, 1500);
+
     // }, 1500);
   };
 
@@ -160,7 +165,7 @@ const FileUploadpage = () => {
         <div className="backdrop-blur-xl bg-black/40 border border-white/10 rounded-2xl shadow-2xl px-4 py-3 flex items-center space-x-4">
           <div className="text-right">
             <div className="text-sm font-semibold text-white">{roomName}</div>
-            <div className="text-xs text-gray-400">Code: {roomCode}</div>
+            <div className="text-x text-gray-400"> {roomCode}</div>
           </div>
           <motion.button
             whileHover={{ scale: 1.1 }}

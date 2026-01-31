@@ -3,6 +3,7 @@ import LandingPage from '../pages/index';
 import FileUploadpage from '../pages/file-upload';
 import RoomCreate from '../pages/room-create';
 import CodeEditorpage from '../pages/editor';
+import MainCodeEditorPage from '../pages/twst';
 import Login from '../login';
 
 const AppRoutes = () => {
@@ -12,6 +13,7 @@ const AppRoutes = () => {
       <Route path="/upload" element={<FileUploadpage />} />
       <Route path="/create-room" element={<RoomCreate />} />
       <Route path="/editor" element={<CodeEditorpage />} />
+      <Route path="/twst" element={<MainCodeEditorPage />} />
       <Route path="/login" element={<Login />} />
     </Routes>
   );

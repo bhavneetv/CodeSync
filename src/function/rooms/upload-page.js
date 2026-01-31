@@ -1,4 +1,5 @@
 import supabase from "../../supabaseClient";
+import { isLoggin } from "../login/isLoggin";
 
 
 // function to find room by room link
@@ -9,6 +10,7 @@ export async function findRoomname(roomLink) {
         .eq("room_link", roomLink)
         .eq("type", "permanent")
         .eq("is_room_new", true)
+        .eq("owner_id", await isLoggin("id") ?? null)
         .maybeSingle();
     if (error) return null;
     return data ?? null;
