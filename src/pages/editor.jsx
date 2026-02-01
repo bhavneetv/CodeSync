@@ -4,15 +4,29 @@ import {
   Play, Save, Users, Settings, Plus, FolderPlus, Edit2, Trash2,
   ChevronRight, ChevronDown, File, Folder, X, Menu, Terminal as TerminalIcon,
   Maximize2, Minimize2, AlertTriangle, Crown, Shield, LogOut,
-  FileCode, FileJson, FileText, Image as ImageIcon, Database, Github, GripVertical
+  FileCode, FileJson, FileText, Image as ImageIcon, Database, Github, GripVertical,
+  Loader2, Download
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
-// import { getRoomFiles, buildFileTreeFromDB } from '../function/files/create-file';
-import { getRoomFiles, buildFileTree, readEncryptedFile, handleCreateFolder, createEncryptedFile } from '../function/files/create-file';
+import { getRoomFiles, buildFileTree, readEncryptedFile, handleCreateFolder, createEncryptedFile, updateEncryptedFile } from '../function/files/create-file';
 import { get } from 'lodash';
 import supabase from '../supabaseClient';
-import { sup } from 'framer-motion/client';
 import { isRoomValid } from '../function/rooms/upload-page';
+import { decrypt } from '../function/login/encryption';
+
+// Cursor colors for different users
+const CURSOR_COLORS = [
+  '#3B82F6', // Blue
+  '#10B981', // Green
+  '#F59E0B', // Amber
+  '#EF4444', // Red
+  '#8B5CF6', // Purple
+  '#EC4899', // Pink
+  '#14B8A6', // Teal
+  '#F97316', // Orange
+  '#06B6D4', // Cyan
+  '#84CC16', // Lime
+];
 
 // Modern file type icons mapping
 const fileIcons = {
@@ -43,9 +57,6 @@ const getFileIcon = (filename) => {
   return <IconComponent className={`w-4 h-4 ${iconData.color}`} />;
 };
 
-// Initial file tree structure
-
-// Mock users data
 const mockUsers = [
   { id: 1, name: 'Alice Cooper', role: 'owner', online: true, avatar: '👩‍💻' },
   { id: 2, name: 'Bob Wilson', role: 'admin', online: true, avatar: '👨‍💼' },
@@ -57,12 +68,11 @@ const initialFileTree = {
   name: 'Loading',
   type: 'folder',
   isExpanded: true,
-  children: [
-  ]
+  children: []
 };
 
 export default function CodeEditorPage() {
-  const [roomType, setRoomType] = useState('solo'); // 'solo', 'temporary', 'collaborative'
+  const [roomType, setRoomType] = useState('solo');
   const [roomName, setRoomName] = useState('Project CodeSpace');
   const [isEditingRoomName, setIsEditingRoomName] = useState(false);
   const [activeFile, setActiveFile] = useState(null);
@@ -78,7 +88,14 @@ export default function CodeEditorPage() {
   const [ownerOnline, setOwnerOnline] = useState(true);
   const [drawerWidth, setDrawerWidth] = useState(280);
   const [isResizing, setIsResizing] = useState(false);
-  const [userRole, setUserRole] = useState('guest'); // 'owner', 'editor', 'guest'
+  const [userRole, setUserRole] = useState('editor');
+
+  // Collaboration state
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [currentUserName, setCurrentUserName] = useState('');
+  const [remoteCursors, setRemoteCursors] = useState({});
+  const [remoteSelections, setRemoteSelections] = useState({});
+  const [connectedUsers, setConnectedUsers] = useState([]);
 
   // Modal states
   const [createFileModal, setCreateFileModal] = useState({ show: false, parentPath: [] });
@@ -87,19 +104,25 @@ export default function CodeEditorPage() {
   const [deleteModal, setDeleteModal] = useState({ show: false, item: null, path: [] });
 
   const [fileTree, setFileTree] = useState(initialFileTree);
+  const [isSaving, setIsSaving] = useState(false);
 
   const editorRef = useRef(null);
+  const monacoRef = useRef(null);
   const resizeRef = useRef(null);
+  const editorContentRef = useRef("");
+  const cursorDecorationsRef = useRef([]);
+  const realtimeChannelRef = useRef(null);
+
   const [isDesktopDrawer, setIsDesktopDrawer] = useState(typeof window !== 'undefined' && window.innerWidth >= 1024);
 
   const roomLink = new URLSearchParams(window.location.search).get("roomId");
+  
   const fetch = async () => {
     const roomInfo = await isRoomValid(roomLink);
     if (!roomInfo) {
       window.location.href = '/create-room';
       return false;
     }
-  
   }
 
   useEffect(() => {
@@ -108,9 +131,12 @@ export default function CodeEditorPage() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // Initialize collaboration
   useEffect(() => {
     fetch();
     verifyAccess();
+    initializeCollaboration();
+    
     async function loadFiles() {
       try {
         const files = await getRoomFiles(roomLink);
@@ -122,6 +148,13 @@ export default function CodeEditorPage() {
     }
 
     if (roomLink) loadFiles();
+
+    return () => {
+      // Cleanup realtime subscriptions
+      if (realtimeChannelRef.current) {
+        realtimeChannelRef.current.unsubscribe();
+      }
+    };
   }, [roomLink]);
 
   const verifyAccess = async () => {
@@ -138,26 +171,162 @@ export default function CodeEditorPage() {
 
     const { data, error } = await supabase
       .from("room_members")
-      .select("role")
+      .select("role, user_id")
       .eq("room_id", ID)
       .eq("join_token", token)
       .single();
 
-
-    console.log(data, error);
     if (!data) {
       console.log("Access denied");
       window.location.href = "/create-room";
       return;
     }
 
-    setUserRole(data.role);
-    // console.log("ROLE:", data.role);
+    setUserRole("editor");
+    setCurrentUserId(data.user_id);
+
+    // Fetch user's name
+    const { data: userData  , error: userDataError} = await supabase
+      .from("user")
+      .select("name")
+      .eq("uid", data.user_id)
+      .single();
+
+    if (userDataError) {
+      console.error("Failed to fetch user data:", userDataError);
+      return;
+    }
+    if (userData) {
+      setCurrentUserName("userData.name");
+    }
   };
 
-  // Resizable drawer: movable, min 220 max 500; auto-adapt when content overflows (scroll)
+  // Initialize realtime collaboration
+  const initializeCollaboration = async () => {
+    if (!roomLink) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+
+    // Create a unique channel for this room
+    const channel = supabase.channel(`room:${roomLink}`, {
+      config: {
+        broadcast: { self: false },
+        presence: { key: token }
+      }
+    });
+
+    // Track presence (who's online)
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const users = [];
+        
+        Object.keys(state).forEach(key => {
+          const presences = state[key];
+          presences.forEach(presence => {
+            users.push({
+              userId: presence.userId,
+              userName: presence.userName,
+              color: presence.color,
+              activeFile: presence.activeFile
+            });
+          });
+        });
+        
+        setConnectedUsers(users);
+      })
+      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+        console.log('User joined:', newPresences);
+      })
+      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+        console.log('User left:', leftPresences);
+      });
+
+    // Listen for cursor movements
+    channel.on('broadcast', { event: 'cursor' }, ({ payload }) => {
+      if (payload.userId !== currentUserId) {
+        setRemoteCursors(prev => ({
+          ...prev,
+          [payload.userId]: {
+            position: payload.position,
+            userName: payload.userName,
+            color: payload.color,
+            fileId: payload.fileId
+          }
+        }));
+      }
+    });
+
+    // Listen for selections
+    channel.on('broadcast', { event: 'selection' }, ({ payload }) => {
+      if (payload.userId !== currentUserId) {
+        setRemoteSelections(prev => ({
+          ...prev,
+          [payload.userId]: {
+            selection: payload.selection,
+            color: payload.color,
+            fileId: payload.fileId
+          }
+        }));
+      }
+    });
+
+    // Listen for content changes
+    channel.on('broadcast', { event: 'content-change' }, ({ payload }) => {
+      if (payload.userId !== currentUserId && payload.fileId === activeFile?.id) {
+        // Apply remote changes to editor
+        if (editorRef.current) {
+          const model = editorRef.current.getModel();
+          if (model) {
+            const currentContent = model.getValue();
+            if (currentContent !== payload.content) {
+              editorRef.current.executeEdits('remote', [{
+                range: model.getFullModelRange(),
+                text: payload.content
+              }]);
+            }
+          }
+        }
+      }
+    });
+
+    await channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        // Announce presence with a random color
+        const colorIndex = Math.floor(Math.random() * CURSOR_COLORS.length);
+        await channel.track({
+          userId: currentUserId,
+          userName: currentUserName,
+          color: CURSOR_COLORS[colorIndex],
+          activeFile: activeFile?.id || null,
+          online_at: new Date().toISOString()
+        });
+      }
+    });
+
+    realtimeChannelRef.current = channel;
+  };
+
+  // Update presence when active file changes
+  useEffect(() => {
+    if (realtimeChannelRef.current && currentUserId) {
+      const state = realtimeChannelRef.current.presenceState();
+      const currentPresence = state[new URLSearchParams(window.location.search).get("token")]?.[0];
+      
+      if (currentPresence) {
+        realtimeChannelRef.current.track({
+          ...currentPresence,
+          activeFile: activeFile?.id || null
+        });
+      }
+    }
+  }, [activeFile, currentUserId]);
+
+  // Resizable drawer
   const drawerMinWidth = 220;
   const drawerMaxWidth = 500;
+  
   useEffect(() => {
     const handleMouseMove = (e) => {
       if (!isResizing) return;
@@ -199,62 +368,74 @@ export default function CodeEditorPage() {
     setFileTree((prev) => updateTree(prev, path));
   };
 
-  // Open file in editor (openInBackground: like VS Code - add tab but don't switch)
+  async function readFileContent(storagePath) {
+    const { data, error } = await supabase
+      .storage
+      .from("user-files")
+      .download(storagePath);
+
+    if (error) {
+      console.error("DOWNLOAD ERROR:", error);
+      throw error;
+    }
+
+    const text = await data.text();
+    return decrypt(text);
+  }
+
   const openFile = async (fileNode, openInBackground = false) => {
-    // Close drawer on mobile when clicking a file
     if (window.innerWidth < 768) {
       setShowFileExplorer(false);
     }
 
-    // Check if tab already exists
-    const existingTab = openTabs.find(tab => tab.id === fileNode.id);
-    
-    if (existingTab) {
-      if (!openInBackground) {
-        setActiveFile(existingTab);
-        setEditorContent(existingTab.content || '');
-      }
-      return;
-    }
-
-    // Add to tabs
-    const newTab = {
-      id: fileNode.id,
-      name: fileNode.name,
-      fullPath: fileNode.fullPath,
-      content: "// Loading...",
-    };
-
-    setOpenTabs(prev => [...prev, newTab]);
-    if (!openInBackground) {
-      setActiveFile(newTab);
-      setEditorContent("// Loading...");
-    }
-
     try {
       const content = await readEncryptedFile(fileNode.fullPath);
+      console.log('[Open] Read fresh content from storage:', content?.substring(0, 50));
 
-      // Update tab content
-      setOpenTabs(prev => prev.map(tab => 
-        tab.id === fileNode.id ? { ...tab, content } : tab
-      ));
+      const existingTab = openTabs.find(tab => tab.id === fileNode.id);
 
+      if (existingTab) {
+        setOpenTabs(prev => prev.map(tab =>
+          tab.id === fileNode.id ? { ...tab, content, isDirty: false } : tab
+        ));
+
+        if (!openInBackground) {
+          setActiveFile({
+            id: fileNode.id,
+            name: fileNode.name,
+            fullPath: fileNode.fullPath,
+            content,
+          });
+          setEditorContent(content);
+          editorContentRef.current = content;
+        }
+        return;
+      }
+
+      const newTab = {
+        id: fileNode.id,
+        name: fileNode.name,
+        fullPath: fileNode.fullPath,
+        content,
+        isDirty: false,
+      };
+
+      setOpenTabs(prev => [...prev, newTab]);
+      
       if (!openInBackground) {
-        setActiveFile({
-          id: fileNode.id,
-          name: fileNode.name,
-          fullPath: fileNode.fullPath,
-          content,
-        });
+        setActiveFile(newTab);
         setEditorContent(content);
+        editorContentRef.current = content;
       }
     } catch (err) {
       console.error("Open file failed:", err);
-      if (!openInBackground) setEditorContent("// Failed to load file");
+      if (!openInBackground) {
+        setEditorContent("// Failed to load file");
+        editorContentRef.current = "// Failed to load file";
+      }
     }
   };
 
-  // Close tab
   const closeTab = (tabId, e) => {
     e.stopPropagation();
     const newTabs = openTabs.filter(tab => tab.id !== tabId);
@@ -265,40 +446,227 @@ export default function CodeEditorPage() {
         const nextTab = newTabs[newTabs.length - 1];
         setActiveFile(nextTab);
         setEditorContent(nextTab.content || '');
+        editorContentRef.current = nextTab.content || '';
       } else {
         setActiveFile(null);
         setEditorContent('');
+        editorContentRef.current = '';
       }
     }
   };
 
-  // Switch tab
   const switchTab = (tab) => {
     setActiveFile(tab);
     setEditorContent(tab.content || '');
+    editorContentRef.current = tab.content || '';
   };
 
   // Handle editor mount
-  const handleEditorDidMount = (editor) => {
+  const handleEditorDidMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
 
+    // Track cursor position changes
     editor.onDidChangeCursorPosition((e) => {
+      const position = {
+        lineNumber: e.position.lineNumber,
+        column: e.position.column
+      };
+
       setCursorPosition({
-        line: e.position.lineNumber,
-        column: e.position.column,
+        line: position.lineNumber,
+        column: position.column,
       });
+
+      // Broadcast cursor position to other users
+      if (realtimeChannelRef.current && currentUserId && activeFile) {
+        const state = realtimeChannelRef.current.presenceState();
+        const token = new URLSearchParams(window.location.search).get("token");
+        const currentPresence = state[token]?.[0];
+
+        realtimeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'cursor',
+          payload: {
+            userId: currentUserId,
+            userName: currentUserName,
+            color: currentPresence?.color || CURSOR_COLORS[0],
+            position: position,
+            fileId: activeFile.id
+          }
+        });
+      }
+    });
+
+    // Track selection changes
+    editor.onDidChangeCursorSelection((e) => {
+      if (realtimeChannelRef.current && currentUserId && activeFile) {
+        const state = realtimeChannelRef.current.presenceState();
+        const token = new URLSearchParams(window.location.search).get("token");
+        const currentPresence = state[token]?.[0];
+
+        realtimeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'selection',
+          payload: {
+            userId: currentUserId,
+            color: currentPresence?.color || CURSOR_COLORS[0],
+            selection: {
+              startLineNumber: e.selection.startLineNumber,
+              startColumn: e.selection.startColumn,
+              endLineNumber: e.selection.endLineNumber,
+              endColumn: e.selection.endColumn
+            },
+            fileId: activeFile.id
+          }
+        });
+      }
     });
   };
 
+  // Render remote cursors and selections
+  useEffect(() => {
+    if (!editorRef.current || !monacoRef.current || !activeFile) return;
+
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    const decorations = [];
+
+    // Render remote cursors for users in the same file
+    Object.entries(remoteCursors).forEach(([userId, cursorData]) => {
+      if (cursorData.fileId === activeFile.id) {
+        // Cursor decoration
+        decorations.push({
+          range: new monaco.Range(
+            cursorData.position.lineNumber,
+            cursorData.position.column,
+            cursorData.position.lineNumber,
+            cursorData.position.column
+          ),
+          options: {
+            className: `remote-cursor-${userId}`,
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+            beforeContentClassName: 'remote-cursor-decoration',
+            after: {
+              content: cursorData.userName,
+              inlineClassName: 'remote-cursor-label',
+              inlineClassNameAffectsLetterSpacing: true
+            }
+          }
+        });
+      }
+    });
+
+    // Render remote selections
+    Object.entries(remoteSelections).forEach(([userId, selectionData]) => {
+      if (selectionData.fileId === activeFile.id) {
+        const sel = selectionData.selection;
+        decorations.push({
+          range: new monaco.Range(
+            sel.startLineNumber,
+            sel.startColumn,
+            sel.endLineNumber,
+            sel.endColumn
+          ),
+          options: {
+            className: `remote-selection-${userId}`,
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+            inlineClassName: 'remote-selection-inline'
+          }
+        });
+      }
+    });
+
+    cursorDecorationsRef.current = editor.deltaDecorations(
+      cursorDecorationsRef.current,
+      decorations
+    );
+
+    // Add CSS for remote cursors
+    const styleId = 'remote-cursor-styles';
+    let styleElement = document.getElementById(styleId);
+    
+    if (!styleElement) {
+      styleElement = document.createElement('style');
+      styleElement.id = styleId;
+      document.head.appendChild(styleElement);
+    }
+
+    let css = '';
+    
+    Object.entries(remoteCursors).forEach(([userId, cursorData]) => {
+      css += `
+        .remote-cursor-${userId}::before {
+          content: '';
+          position: absolute;
+          width: 2px;
+          height: 1.2em;
+          background-color: ${cursorData.color};
+          animation: blink 1s infinite;
+        }
+        .remote-cursor-${userId}::after {
+          content: '${cursorData.userName}';
+          position: absolute;
+          top: -18px;
+          left: 0;
+          background-color: ${cursorData.color};
+          color: white;
+          padding: 2px 6px;
+          border-radius: 3px;
+          font-size: 11px;
+          font-weight: 500;
+          white-space: nowrap;
+          pointer-events: none;
+          z-index: 1000;
+        }
+      `;
+    });
+
+    Object.entries(remoteSelections).forEach(([userId, selectionData]) => {
+      css += `
+        .remote-selection-${userId} {
+          background-color: ${selectionData.color}33 !important;
+        }
+      `;
+    });
+
+    css += `
+      @keyframes blink {
+        0%, 49% { opacity: 1; }
+        50%, 100% { opacity: 0; }
+      }
+    `;
+
+    styleElement.textContent = css;
+
+  }, [remoteCursors, remoteSelections, activeFile]);
+
   // Handle editor content change
   const handleEditorChange = (value) => {
-    setEditorContent(value);
-    
-    // Update content in tabs
-    if (activeFile) {
-      setOpenTabs(prev => prev.map(tab => 
-        tab.id === activeFile.id ? { ...tab, content: value } : tab
-      ));
+    editorContentRef.current = value;
+
+    setOpenTabs(prev =>
+      prev.map(t =>
+        t.id === activeFile.id
+          ? { ...t, content: value, isDirty: true }
+          : t
+      )
+    );
+
+    // Broadcast content changes to other users (debounced)
+    if (realtimeChannelRef.current && currentUserId && activeFile) {
+      clearTimeout(window.contentChangeTimeout);
+      window.contentChangeTimeout = setTimeout(() => {
+        realtimeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'content-change',
+          payload: {
+            userId: currentUserId,
+            content: value,
+            fileId: activeFile.id
+          }
+        });
+      }, 500);
     }
   };
 
@@ -306,8 +674,6 @@ export default function CodeEditorPage() {
   const handleCreateFile = async (fileName, extension, parentPath) => {
     try {
       const folderPath = resolveFolderPath(fileTree, parentPath);
-
-      console.log("Resolved folderPath:", folderPath || "(root)");
 
       await createEncryptedFile(
         roomLink,
@@ -344,8 +710,6 @@ export default function CodeEditorPage() {
 
     return parts.join("/");
   };
-
-
 
   // Create new folder
   const handleCreateFolder = (folderName, parentPath) => {
@@ -391,7 +755,6 @@ export default function CodeEditorPage() {
     setCreateFolderModal({ show: false, parentPath: [] });
   };
 
-
   const normalizeFolderParentPath = (tree, path) => {
     if (!path || path.length === 0) return [];
 
@@ -406,7 +769,6 @@ export default function CodeEditorPage() {
         normalized.push(index);
         current = node;
       } else {
-
         break;
       }
     }
@@ -414,35 +776,43 @@ export default function CodeEditorPage() {
     return normalized;
   };
 
+  const activeTab = openTabs.find((t) => t.id === activeFile?.id);
+  const isActiveDirty = activeTab?.isDirty ?? false;
 
-  // Rename file/folder
-  const handleRename = (newName) => {
-    console.log('Renaming:', { oldName: renameModal.item?.name, newName, path: renameModal.path });
-    setRenameModal({ show: false, item: null, path: [] });
-  };
+  const handleSave = async () => {
+    if (!activeFile || !canEdit) return;
 
-  // Delete file/folder
-  const handleDelete = () => {
-    console.log('Deleting:', { name: deleteModal.item?.name, path: deleteModal.path });
-    setDeleteModal({ show: false, item: null, path: [] });
-  };
+    const tab = openTabs.find(t => t.id === activeFile.id);
+    if (!tab || !tab.isDirty) return;
 
-  // User actions
-  const handleKickUser = (userId) => {
-    console.log('Kicking user:', userId);
-  };
+    setIsSaving(true);
 
-  const handleMakeAdmin = (userId) => {
-    console.log('Making admin:', userId);
-  };
+    const latestContent = editorContentRef.current;
+    console.log('[Save] Saving content:', latestContent);
 
-  // Room actions
-  const handleRun = () => {
-    console.log('Running code...');
-  };
+    try {
+      await updateEncryptedFile(tab.fullPath, latestContent);
+      console.log('[Save] Successfully saved to storage');
 
-  const handleSave = () => {
-    console.log('Saving code...');
+      setOpenTabs(prev =>
+        prev.map(t =>
+          t.id === tab.id
+            ? { ...t, content: latestContent, isDirty: false }
+            : t
+        )
+      );
+
+      setActiveFile(prev => ({
+        ...prev,
+        content: latestContent
+      }));
+
+    } catch (err) {
+      console.error('[Save] Failed:', err);
+      alert('Failed to save file. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handlePushGitHub = () => {
@@ -453,13 +823,39 @@ export default function CodeEditorPage() {
     console.log('Deleting room...');
   };
 
+  const handleRename = (newName) => {
+    console.log('Renaming:', { oldName: renameModal.item?.name, newName, path: renameModal.path });
+    setRenameModal({ show: false, item: null, path: [] });
+  };
+
+  const handleDelete = () => {
+    console.log('Deleting:', { name: deleteModal.item?.name, path: deleteModal.path });
+    setDeleteModal({ show: false, item: null, path: [] });
+  };
+
+  const handleKickUser = (userId) => {
+    console.log('Kicking user:', userId);
+  };
+
+  const handleMakeAdmin = (userId) => {
+    console.log('Making admin:', userId);
+  };
+
+  const handleRun = () => {
+    console.log('Running code...');
+  };
+
   const isOwner = userRole === 'owner';
   const canEdit = isOwner || userRole === 'editor';
-  const onlineCount = users.filter(u => u.online).length;
+  const onlineCount = connectedUsers.length || users.filter(u => u.online).length;
+
+  // Get users working on the same file
+  const usersInCurrentFile = connectedUsers.filter(
+    user => user.activeFile === activeFile?.id && user.userId !== currentUserId
+  );
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-[#0d1117] text-slate-100 font-['Inter',_sans-serif]">
-      {/* Modern dark theme styles */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -522,6 +918,12 @@ export default function CodeEditorPage() {
         .modern-button:active {
           transform: scale(0.98);
         }
+
+        /* Collaborative cursor animations */
+        @keyframes cursorBlink {
+          0%, 49% { opacity: 1; }
+          50%, 100% { opacity: 0; }
+        }
       `}</style>
 
       {/* Header */}
@@ -534,7 +936,6 @@ export default function CodeEditorPage() {
             <Menu className="w-4 h-4" />
           </button>
 
-          {/* Room name: desktop only */}
           <div className="hidden md:flex flex-col min-w-0">
             <div className="flex items-center gap-2">
               {isEditingRoomName ? (
@@ -563,10 +964,34 @@ export default function CodeEditorPage() {
               )}
             </div>
           </div>
+
+          {/* Show users in current file */}
+          {usersInCurrentFile.length > 0 && (
+            <div className="hidden lg:flex items-center gap-1 px-2 py-1 bg-slate-800/50 rounded-full border border-slate-700/50">
+              {usersInCurrentFile.slice(0, 3).map((user, idx) => (
+                <div
+                  key={user.userId}
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold text-white"
+                  style={{ 
+                    backgroundColor: user.color,
+                    marginLeft: idx > 0 ? '-8px' : '0',
+                    zIndex: 10 - idx
+                  }}
+                  title={user.userName}
+                >
+                  {user.userName.charAt(0).toUpperCase()}
+                </div>
+              ))}
+              {usersInCurrentFile.length > 3 && (
+                <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold bg-slate-700 text-slate-300 -ml-2">
+                  +{usersInCurrentFile.length - 3}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2.5 flex-shrink-0">
-          {/* Green pill: total online members */}
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-500/15 text-emerald-400 text-xs font-medium rounded-full border border-emerald-500/30">
             <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
             <span>Online {onlineCount}</span>
@@ -575,11 +1000,10 @@ export default function CodeEditorPage() {
           <button
             onClick={handleRun}
             disabled={!canEdit}
-            className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium rounded transition-all modern-button ${
-              canEdit
-                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-            }`}
+            className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium rounded transition-all modern-button ${canEdit
+              ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+              }`}
           >
             <Play className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             <span className="hidden sm:inline">Run</span>
@@ -587,25 +1011,32 @@ export default function CodeEditorPage() {
 
           <button
             onClick={handleSave}
-            disabled={!canEdit}
-            className={`p-2 rounded transition-all modern-button ${
-              canEdit
-                ? 'hover:bg-slate-700/50 text-slate-200'
-                : 'text-slate-500 cursor-not-allowed opacity-60'
-            }`}
-            title="Save"
+            disabled={!canEdit || isSaving || !activeFile}
+            className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition-all modern-button ${canEdit && !isSaving
+              ? 'hover:bg-slate-700/50 text-slate-200'
+              : 'text-slate-500 cursor-not-allowed opacity-60'
+              }`}
+            title={isSaving ? 'Saving...' : isActiveDirty ? 'Save' : 'Save offline'}
           >
-            <Save className="w-4 h-4" />
+            {isSaving ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : isActiveDirty ? (
+              <Save className="w-4 h-4" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            <span className="hidden sm:inline text-xs sm:text-sm font-medium">
+              {isSaving ? 'Saving...' : isActiveDirty ? 'Save' : 'Save offline'}
+            </span>
           </button>
 
           <button
             onClick={handlePushGitHub}
             disabled={!isOwner || roomType === 'temporary'}
-            className={`p-2 rounded transition-all modern-button ${
-              isOwner && roomType !== 'temporary'
-                ? 'hover:bg-slate-700/50 text-slate-200'
-                : 'text-slate-500 cursor-not-allowed opacity-60'
-            }`}
+            className={`p-2 rounded transition-all modern-button ${isOwner && roomType !== 'temporary'
+              ? 'hover:bg-slate-700/50 text-slate-200'
+              : 'text-slate-500 cursor-not-allowed opacity-60'
+              }`}
             title="Push to GitHub"
           >
             <Github className="w-4 h-4" />
@@ -634,7 +1065,7 @@ export default function CodeEditorPage() {
 
       {/* Main Layout */}
       <div className="flex h-[calc(100vh-48px)]">
-        {/* File Explorer Sidebar - movable drawer, auto-adapts with scroll when content overflows */}
+        {/* File Explorer Sidebar */}
         <AnimatePresence>
           {showFileExplorer && (
             <motion.aside
@@ -650,7 +1081,6 @@ export default function CodeEditorPage() {
               }}
             >
               <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                {/* File Explorer Header */}
                 <div className="p-2.5 sm:p-3 border-b border-slate-700/60 flex items-center justify-between flex-shrink-0">
                   <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
                     <Folder className="w-3.5 h-3.5 text-slate-500" />
@@ -660,9 +1090,8 @@ export default function CodeEditorPage() {
                     <button
                       onClick={() => setCreateFileModal({ show: true, parentPath: [] })}
                       disabled={!canEdit}
-                      className={`p-1.5 rounded transition-all modern-button ${
-                        canEdit ? 'hover:bg-emerald-500/10 text-emerald-400' : 'text-slate-500 cursor-not-allowed opacity-50'
-                      }`}
+                      className={`p-1.5 rounded transition-all modern-button ${canEdit ? 'hover:bg-emerald-500/10 text-emerald-400' : 'text-slate-500 cursor-not-allowed opacity-50'
+                        }`}
                       title="New File"
                     >
                       <Plus className="w-3.5 h-3.5" />
@@ -670,9 +1099,8 @@ export default function CodeEditorPage() {
                     <button
                       onClick={() => setCreateFolderModal({ show: true, parentPath: [] })}
                       disabled={!canEdit}
-                      className={`p-1.5 rounded transition-all modern-button ${
-                        canEdit ? 'hover:bg-slate-600/30 text-slate-300' : 'text-slate-500 cursor-not-allowed opacity-50'
-                      }`}
+                      className={`p-1.5 rounded transition-all modern-button ${canEdit ? 'hover:bg-slate-600/30 text-slate-300' : 'text-slate-500 cursor-not-allowed opacity-50'
+                        }`}
                       title="New Folder"
                     >
                       <FolderPlus className="w-3.5 h-3.5" />
@@ -680,7 +1108,6 @@ export default function CodeEditorPage() {
                   </div>
                 </div>
 
-                {/* File Tree - scrolls when content overflows so drawer auto-adapts */}
                 <div className="flex-1 overflow-y-auto overflow-x-auto min-h-0 p-2">
                   <FileTreeNode
                     node={fileTree}
@@ -697,7 +1124,6 @@ export default function CodeEditorPage() {
                 </div>
               </div>
 
-              {/* Resize Handle - desktop only, movable drawer */}
               <div
                 ref={resizeRef}
                 className="hidden lg:block w-1 flex-shrink-0 hover:w-1.5 bg-transparent hover:bg-slate-500/50 cursor-col-resize transition-all"
@@ -713,19 +1139,22 @@ export default function CodeEditorPage() {
 
         {/* Editor Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Tab Bar - VS Code style */}
           {openTabs.length > 0 && (
             <div className="glass border-b border-slate-700/60 flex items-center overflow-x-auto min-h-0">
               {openTabs.map((tab) => (
                 <div
                   key={tab.id}
                   onClick={() => switchTab(tab)}
-                  className={`flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 cursor-pointer transition-all border-r border-slate-700/40 min-w-0 ${
-                    activeFile?.id === tab.id ? 'tab-active' : 'tab-inactive'
-                  }`}
+                  className={`flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 cursor-pointer transition-all border-r border-slate-700/40 min-w-0 ${activeFile?.id === tab.id ? 'tab-active' : 'tab-inactive'
+                    }`}
                 >
                   {getFileIcon(tab.name)}
-                  <span className="text-xs font-medium whitespace-nowrap truncate max-w-[120px] sm:max-w-none">{tab.name}</span>
+                  <span className={`text-xs flex-1 truncate max-w-[120px] sm:max-w-none ${activeFile?.id === tab.id ? 'font-semibold' : 'font-medium'}`}>
+                    {tab.name}
+                  </span>
+                  {tab.isDirty && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" title="Unsaved changes" />
+                  )}
                   <button
                     onClick={(e) => closeTab(tab.id, e)}
                     className="p-1 hover:bg-slate-600/50 rounded transition-all modern-button flex-shrink-0"
@@ -737,7 +1166,6 @@ export default function CodeEditorPage() {
             </div>
           )}
 
-          {/* Monaco Editor - no minimap, modern font */}
           <div className="flex-1 relative bg-[#0d1117] min-h-0">
             {activeFile ? (
               <Editor
@@ -844,209 +1272,33 @@ export default function CodeEditorPage() {
         </div>
       </div>
 
-      {/* Users Modal */}
+      {/* Modals - Users, Settings, Create File/Folder, Rename, Delete */}
       <AnimatePresence>
         {showUsersModal && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setShowUsersModal(false)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-              className="glass-strong rounded-lg p-4 sm:p-6 max-w-md w-full border border-slate-700/60"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-semibold flex items-center gap-2 text-slate-200">
-                  <Users className="w-5 h-5 text-slate-400" />
-                  Room Users
-                </h3>
-                <button
-                  onClick={() => setShowUsersModal(false)}
-                  className="p-2 hover:bg-slate-700/50 rounded transition-all modern-button text-slate-400"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-2 sm:space-y-3">
-                {users.map((user) => (
-                  <div
-                    key={user.id}
-                    className={`p-3 sm:p-4 rounded transition-all border ${
-                      user.online
-                        ? 'bg-slate-800/40 border-slate-700/50'
-                        : 'bg-slate-800/20 border-slate-700/30 opacity-60'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="text-2xl sm:text-3xl flex-shrink-0">{user.avatar}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-medium text-sm truncate text-slate-200">{user.name}</p>
-                          {user.role === 'owner' && (
-                            <Crown className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                          )}
-                          {user.role === 'admin' && (
-                            <Shield className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                          )}
-                        </div>
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mt-0.5">{user.role}</p>
-                      </div>
-                      {user.online && (
-                        <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full flex-shrink-0"></div>
-                      )}
-                    </div>
-
-                    {isOwner && user.role !== 'owner' && user.online && (
-                      <div className="flex gap-2 mt-3">
-                        <button
-                          onClick={() => handleKickUser(user.id)}
-                          className="flex-1 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded transition-all modern-button text-xs font-semibold flex items-center justify-center gap-2 border border-red-500/20"
-                        >
-                          <LogOut className="w-3.5 h-3.5" />
-                          Kick
-                        </button>
-                        {user.role !== 'admin' && (
-                          <button
-                            onClick={() => handleMakeAdmin(user.id)}
-                            className="flex-1 px-3 py-2 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded transition-all modern-button text-xs font-semibold flex items-center justify-center gap-2 border border-slate-600/50"
-                          >
-                            <Shield className="w-3.5 h-3.5" />
-                            Make Admin
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          </motion.div>
+          <UsersModal 
+            users={connectedUsers.length > 0 ? connectedUsers : users}
+            isOwner={isOwner}
+            onClose={() => setShowUsersModal(false)}
+            onKickUser={handleKickUser}
+            onMakeAdmin={handleMakeAdmin}
+          />
         )}
       </AnimatePresence>
 
-      {/* Settings Panel - owner/collaborative/room type moved here */}
       <AnimatePresence>
         {showSettingsPanel && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
-              onClick={() => setShowSettingsPanel(false)}
-            />
-            <motion.div
-              initial={{ x: 400, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: 400, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="fixed right-0 top-0 h-full w-full md:w-96 glass-strong border-l border-slate-700/60 z-50 p-4 sm:p-6 overflow-y-auto"
-            >
-              <div className="flex items-center justify-between mb-5">
-                <h3 className="text-base font-semibold flex items-center gap-2 text-slate-200">
-                  <Settings className="w-5 h-5 text-slate-400" />
-                  Settings
-                </h3>
-                <button
-                  onClick={() => setShowSettingsPanel(false)}
-                  className="p-2 hover:bg-slate-700/50 rounded transition-all modern-button text-slate-400"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                {/* Room type: permanent or temporary - in settings */}
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Type</label>
-                  <div className={`px-3 py-2.5 bg-slate-800/50 border rounded text-sm font-medium ${
-                    roomType === 'temporary' ? 'border-amber-500/30 text-amber-400' : 'border-emerald-500/30 text-emerald-400'
-                  }`}>
-                    {roomType === 'temporary' ? 'Temporary (24h)' : 'Permanent'}
-                  </div>
-                </div>
-
-                {/* Owner - in settings only */}
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Owner</label>
-                  <div className="flex items-center gap-2 px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded text-sm">
-                    <Crown className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                    <span className="font-medium text-slate-300 truncate">{users.find(u => u.role === 'owner')?.name || 'Unknown'}</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Name</label>
-                  <input
-                    type="text"
-                    value={roomName}
-                    onChange={(e) => setRoomName(e.target.value)}
-                    disabled={!isOwner}
-                    className={`w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded text-sm focus:outline-none focus:border-emerald-500/50 transition-all ${
-                      !isOwner ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Password</label>
-                  <input
-                    type="password"
-                    placeholder="••••••••"
-                    disabled={!isOwner}
-                    className={`w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded text-sm focus:outline-none focus:border-emerald-500/50 transition-all ${
-                      !isOwner ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                  />
-                </div>
-
-                {/* Download path - note above input */}
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Download Path</label>
-                  <p className="text-[11px] text-slate-500 mb-1.5 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-                    This is only available in Windows or mobile app
-                  </p>
-                  <input
-                    type="text"
-                    value="/home/user/downloads"
-                    readOnly
-                    className="w-full px-3 py-2.5 bg-slate-700/40 border border-slate-600/50 rounded text-sm opacity-60 cursor-not-allowed"
-                  />
-                </div>
-
-                {isOwner && (
-                  <button className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold transition-all modern-button">
-                    Save Settings
-                  </button>
-                )}
-
-                {isOwner && (
-                  <div className="border-t border-slate-700/50 pt-4 mt-4">
-                    <button
-                      onClick={handleDeleteRoom}
-                      className="w-full px-4 py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded text-sm font-semibold flex items-center justify-center gap-2 border border-red-500/20 transition-all modern-button"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Delete Room
-                    </button>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </>
+          <SettingsPanel
+            roomType={roomType}
+            roomName={roomName}
+            setRoomName={setRoomName}
+            isOwner={isOwner}
+            users={users}
+            onClose={() => setShowSettingsPanel(false)}
+            onDeleteRoom={handleDeleteRoom}
+          />
         )}
       </AnimatePresence>
 
-      {/* Create File Modal */}
       <AnimatePresence>
         {createFileModal.show && (
           <CreateFileModal
@@ -1057,7 +1309,6 @@ export default function CodeEditorPage() {
         )}
       </AnimatePresence>
 
-      {/* Create Folder Modal */}
       <AnimatePresence>
         {createFolderModal.show && (
           <CreateFolderModal
@@ -1068,7 +1319,6 @@ export default function CodeEditorPage() {
         )}
       </AnimatePresence>
 
-      {/* Rename Modal */}
       <AnimatePresence>
         {renameModal.show && (
           <RenameModal
@@ -1079,7 +1329,6 @@ export default function CodeEditorPage() {
         )}
       </AnimatePresence>
 
-      {/* Delete Confirmation Modal */}
       <AnimatePresence>
         {deleteModal.show && (
           <DeleteModal
@@ -1093,7 +1342,7 @@ export default function CodeEditorPage() {
   );
 }
 
-// File Tree Node Component
+// File Tree Node Component (same as before)
 function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, onDelete, onCreateFile, onCreateFolder, level = 0, canEdit }) {
   const isActive = activeFile?.id === node.id;
   const [showActions, setShowActions] = useState(false);
@@ -1102,9 +1351,8 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
     return (
       <div className="select-none">
         <div
-          className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-all group ${
-            node.isExpanded ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'
-          }`}
+          className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-all group ${node.isExpanded ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'
+            }`}
           style={{ paddingLeft: `${level * 14 + 8}px` }}
           onMouseEnter={() => setShowActions(true)}
           onMouseLeave={() => setShowActions(false)}
@@ -1208,9 +1456,8 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
 
   return (
     <div
-      className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-all group ${
-        isActive ? 'bg-slate-700/40 border-l-2 border-emerald-500/70 text-slate-100' : 'hover:bg-slate-700/20 text-slate-300'
-      }`}
+      className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-all group ${isActive ? 'bg-slate-700/40 border-l-2 border-emerald-500/70 text-slate-100' : 'hover:bg-slate-700/20 text-slate-300'
+        }`}
       style={{ paddingLeft: `${level * 14 + 8}px` }}
       onClick={(e) => onOpenFile(node, e.ctrlKey || e.metaKey)}
       onMouseEnter={() => setShowActions(true)}
@@ -1256,7 +1503,210 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
   );
 }
 
-// Create File Modal Component
+// Modal Components
+function UsersModal({ users, isOwner, onClose, onKickUser, onMakeAdmin }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.95, opacity: 0, y: 20 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+        className="glass-strong rounded-lg p-4 sm:p-6 max-w-md w-full border border-slate-700/60"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold flex items-center gap-2 text-slate-200">
+            <Users className="w-5 h-5 text-slate-400" />
+            Room Users ({users.length})
+          </h3>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-slate-700/50 rounded transition-all modern-button text-slate-400"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-2 sm:space-y-3 max-h-96 overflow-y-auto">
+          {users.map((user) => (
+            <div
+              key={user.userId || user.id}
+              className={`p-3 sm:p-4 rounded transition-all border ${
+                user.online !== false
+                  ? 'bg-slate-800/40 border-slate-700/50'
+                  : 'bg-slate-800/20 border-slate-700/30 opacity-60'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div 
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-lg flex-shrink-0"
+                  style={{ backgroundColor: user.color || '#3B82F6' }}
+                >
+                  {(user.userName || user.name)?.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-medium text-sm truncate text-slate-200">
+                      {user.userName || user.name}
+                    </p>
+                    {user.role === 'owner' && (
+                      <Crown className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                    )}
+                    {user.role === 'admin' && (
+                      <Shield className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mt-0.5">
+                    {user.role}
+                  </p>
+                </div>
+                {user.online !== false && (
+                  <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full flex-shrink-0"></div>
+                )}
+              </div>
+
+              {isOwner && user.role !== 'owner' && user.online !== false && (
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => onKickUser(user.userId || user.id)}
+                    className="flex-1 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded transition-all modern-button text-xs font-semibold flex items-center justify-center gap-2 border border-red-500/20"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Kick
+                  </button>
+                  {user.role !== 'admin' && (
+                    <button
+                      onClick={() => onMakeAdmin(user.userId || user.id)}
+                      className="flex-1 px-3 py-2 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded transition-all modern-button text-xs font-semibold flex items-center justify-center gap-2 border border-slate-600/50"
+                    >
+                      <Shield className="w-3.5 h-3.5" />
+                      Make Admin
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function SettingsPanel({ roomType, roomName, setRoomName, isOwner, users, onClose, onDeleteRoom }) {
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+        onClick={onClose}
+      />
+      <motion.div
+        initial={{ x: 400, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 400, opacity: 0 }}
+        transition={{ type: 'spring', stiffiness: 300, damping: 30 }}
+        className="fixed right-0 top-0 h-full w-full md:w-96 glass-strong border-l border-slate-700/60 z-50 p-4 sm:p-6 overflow-y-auto"
+      >
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-base font-semibold flex items-center gap-2 text-slate-200">
+            <Settings className="w-5 h-5 text-slate-400" />
+            Settings
+          </h3>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-slate-700/50 rounded transition-all modern-button text-slate-400"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Type</label>
+            <div className={`px-3 py-2.5 bg-slate-800/50 border rounded text-sm font-medium ${roomType === 'temporary' ? 'border-amber-500/30 text-amber-400' : 'border-emerald-500/30 text-emerald-400'
+              }`}>
+              {roomType === 'temporary' ? 'Temporary (24h)' : 'Permanent'}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Owner</label>
+            <div className="flex items-center gap-2 px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded text-sm">
+              <Crown className="w-4 h-4 text-amber-500 flex-shrink-0" />
+              <span className="font-medium text-slate-300 truncate">{users.find(u => u.role === 'owner')?.name || 'Unknown'}</span>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Name</label>
+            <input
+              type="text"
+              value={roomName}
+              onChange={(e) => setRoomName(e.target.value)}
+              disabled={!isOwner}
+              className={`w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded text-sm focus:outline-none focus:border-emerald-500/50 transition-all ${!isOwner ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Password</label>
+            <input
+              type="password"
+              placeholder="••••••••"
+              disabled={!isOwner}
+              className={`w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded text-sm focus:outline-none focus:border-emerald-500/50 transition-all ${!isOwner ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Download Path</label>
+            <p className="text-[11px] text-slate-500 mb-1.5 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+              This is only available in Windows or mobile app
+            </p>
+            <input
+              type="text"
+              value="/home/user/downloads"
+              readOnly
+              className="w-full px-3 py-2.5 bg-slate-700/40 border border-slate-600/50 rounded text-sm opacity-60 cursor-not-allowed"
+            />
+          </div>
+
+          {isOwner && (
+            <button className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold transition-all modern-button">
+              Save Settings
+            </button>
+          )}
+
+          {isOwner && (
+            <div className="border-t border-slate-700/50 pt-4 mt-4">
+              <button
+                onClick={onDeleteRoom}
+                className="w-full px-4 py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded text-sm font-semibold flex items-center justify-center gap-2 border border-red-500/20 transition-all modern-button"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete Room
+              </button>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
 function CreateFileModal({ onClose, onCreate, parentPath }) {
   const [fileName, setFileName] = useState('');
   const [extension, setExtension] = useState('js');
@@ -1344,7 +1794,6 @@ function CreateFileModal({ onClose, onCreate, parentPath }) {
   );
 }
 
-// Create Folder Modal Component
 function CreateFolderModal({ onClose, onCreate, parentPath }) {
   const [folderName, setFolderName] = useState('');
 
@@ -1421,7 +1870,6 @@ function CreateFolderModal({ onClose, onCreate, parentPath }) {
   );
 }
 
-// Rename Modal Component
 function RenameModal({ item, onClose, onRename }) {
   const [newName, setNewName] = useState(item?.name || '');
 
@@ -1485,7 +1933,6 @@ function RenameModal({ item, onClose, onRename }) {
   );
 }
 
-// Delete Confirmation Modal Component
 function DeleteModal({ item, onClose, onDelete }) {
   return (
     <motion.div

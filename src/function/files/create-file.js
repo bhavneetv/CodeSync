@@ -92,6 +92,68 @@ export async function createEncryptedFile(
     };
 }
 
+// Update existing file (overwrite storage blob)
+export async function updateEncryptedFile(storagePath, rawContent) {
+    try {
+        const encryptedContent = encrypt(rawContent);
+
+        const blob = new Blob(
+            [encryptedContent],
+            { type: "text/plain;charset=utf-8" }
+        );
+
+        const bucket = supabase.storage.from("user-files");
+
+        // 🔥 force hard replace
+        const tmpPath = storagePath + ".tmp";
+
+        // upload temp
+        const { data: uploadData, error: uploadError } = await bucket.upload(tmpPath, blob, {
+            upsert: true,
+            cacheControl: "no-store",
+        });
+
+        if (uploadError) {
+            console.error("Upload error:", uploadError);
+            throw new Error(`Failed to upload temp file: ${uploadError.message}`);
+        }
+
+        // remove original
+        const { error: removeError } = await bucket.remove([storagePath]);
+
+        if (removeError) {
+            console.error("Remove error:", removeError);
+            // Don't throw here - file might not exist yet, which is okay
+        }
+
+        // rename temp → original
+        const { error: moveError } = await bucket.move(tmpPath, storagePath);
+
+        if (moveError) {
+            console.error("Move error:", moveError);
+            throw new Error(`Failed to move file: ${moveError.message}`);
+        }
+
+        // verify the file was saved
+        const { data, error: downloadError } = await supabase
+            .storage
+            .from("user-files")
+            .download(storagePath);
+
+        if (downloadError) {
+            console.error("Download error:", downloadError);
+            throw new Error(`Failed to verify file: ${downloadError.message}`);
+        }
+
+        console.log("Saved content:", decrypt(await data.text()));
+
+        return { success: true };
+    } catch (error) {
+        console.error("updateEncryptedFile failed:", error);
+        return { success: false, error: error.message };
+    }
+}
+
 
 
 // get room code
@@ -188,22 +250,18 @@ export async function readEncryptedFile(storagePath) {
     }
 
     const encryptedText = await data.text();
-
-
     const decrypted = decrypt(encryptedText);
-
-
-    if (decrypted === "") {
-        return "Start from Here";
+    console.log("[read]", storagePath);
+    // ✅ Decryption validation
+    if (decrypted === null || decrypted === undefined) {
+        throw new Error("Decryption failed (null/undefined)");
     }
 
-
-    if (!decrypted && encryptedText) {
-        throw new Error("Decryption failed (wrong key or corrupted file)");
-    }
-
+    // ✅ Allow empty files (VERY IMPORTANT)
     return decrypted;
 }
+
+
 
 export const handleCreateFolder = (folderName, parentPath) => {
     if (!folderName) return;
