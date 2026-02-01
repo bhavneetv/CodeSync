@@ -291,55 +291,13 @@ const RoomCreate = () => {
                   </div>
                   <div className="flex space-x-3">
                     <button onClick={handleBack} className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10">Back</button>
-                    <button onClick={() => setView('create_method')} disabled={!roomName} className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2">
-                      Next <ArrowRight size={18} />
+                    <button onClick={handleCreateEmptyRoom} disabled={!roomName || loading} className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2">
+                       {loading ? <Loader2 className="animate-spin" /> : <> Next <ArrowRight size={18} /></>}
                     </button>
                   </div>
                 </motion.div>
               )}
 
-              {/* === 3. CREATE ROOM: METHOD (Empty vs GitHub) === */}
-              {view === 'create_method' && (
-                <motion.div key="create_method" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
-                  <h2 className="text-2xl sm:text-3xl font-bold mb-6 text-center">Choose a Starting Point</h2>
-
-                  <div className="grid grid-cols-1 gap-4 mb-6">
-                    {/* Option A: Empty Room */}
-                    <div
-                      onClick={handleCreateEmptyRoom}
-                      className={`p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex items-center gap-4 ${loading ? 'opacity-50 pointer-events-none' : ''}`}
-                    >
-                      <div className="p-3 bg-blue-500/20 rounded-lg text-blue-400">
-                        <FileCode size={24} />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="font-bold text-lg">Start from Scratch</h3>
-                        <p className="text-sm text-gray-400">Create a blank room and add files manually.</p>
-                      </div>
-                      {loading ? <Loader2 className="animate-spin text-gray-500" /> : <ArrowRight className="text-gray-500" />}
-                    </div>
-
-                    {/* Option B: GitHub Import */}
-                    <div
-                      onClick={handleGithubView}
-                      className="p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex items-center gap-4"
-                    >
-                      <div className="p-3 bg-purple-500/20 rounded-lg text-purple-400">
-                        <Github size={24} />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="font-bold text-lg">Import from GitHub</h3>
-                        <p className="text-sm text-gray-400">Clone a repository directly into this room.</p>
-                      </div>
-                      <ArrowRight className="text-gray-500" />
-                    </div>
-                  </div>
-
-                  <button onClick={handleBack} className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl">
-                    Back
-                  </button>
-                </motion.div>
-              )}
 
               {/* === 4. GITHUB SELECT VIEW === */}
               {view === 'github_select' && (
