@@ -1,69 +1,74 @@
 import supabase from "../../supabaseClient.js";
 
+/* LOGIN */
 export async function login(email, password) {
-    const { data, error } = await supabase.auth.signInWithPassword({
-        email: email,
-        password: password,
-    });
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
 
-    if (error) {
-        return error.message;
-    } else {
-        return data
-    }
+  if (error) return error.message;
+  return data;
 }
 
+/* SIGNUP */
 export async function signup(name, email, password) {
-    const { data, error } = await supabase.auth.signUp({
-        email: email,
-        password: password,
-        options: {
-            data: {
-                name: name,
-            },
-        },
-
-
-    });
-
-    if (error) {
-        console.error("Signup error:", error.message);
-    } else {
-        console.log("Signup success:", data);
-    }
-
-}
-
-export async function loginWithGoogle(prov) {
-    const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: prov,
-    });
-    if (error) {
-        console.error("OAuth login error:", error.message);
-    } else {
-        console.log("OAuth login success:", data);
-    }
-}
-
-export async function logout() {
-    return await supabase.auth.signOut();
-}
-
-export async function getUser() {
-    const { data: { session } } = await supabase.auth.getSession();
-
-    return session;
-
-}
-
-
-export async function loginWithGithub() {
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'github',
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
     options: {
-      scopes: 'repo', 
-      redirectTo: window.location.origin + '/'
+      data: { name },
     },
   });
-  return { data, error };
+
+  if (error) {
+    console.error("Signup error:", error.message);
+    return null;
+  }
+
+  return data;
+}
+
+/* GOOGLE LOGIN */
+export async function loginWithGoogle() {
+  return await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: window.location.origin + "/",
+    },
+  });
+}
+
+/* GITHUB LOGIN */
+export async function loginWithGithub() {
+  return await supabase.auth.signInWithOAuth({
+    provider: "github",
+    options: {
+      scopes: "repo",
+      redirectTo: window.location.origin + "/",
+    },
+  });
+}
+
+/* LOGOUT */
+export async function logout() {
+  return await supabase.auth.signOut();
+}
+
+/* GET USER */
+export async function getUser() {
+  const { data: { user } } = await supabase.auth.getUser();
+  return user;
+}
+
+/* GET USER NAME */
+export function getUserName(user) {
+  if (!user) return null;
+
+  return (
+    user.user_metadata?.name ||
+    user.user_metadata?.full_name ||
+    user.user_metadata?.user_name ||
+    user.email.split("@")[0]
+  );
 }
