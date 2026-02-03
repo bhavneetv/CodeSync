@@ -607,7 +607,7 @@ export async function deleteFolder(
 
         if (storageError) throw storageError;
 
-        // 3️⃣ Delete from DATABASE
+        
         const { error: dbError } = await supabase
             .from("files")
             .delete()
