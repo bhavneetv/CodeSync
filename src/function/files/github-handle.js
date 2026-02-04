@@ -1,14 +1,25 @@
-
+import { set } from 'lodash';
 import supabase from '../../supabaseClient';
 import { createEncryptedFile } from './create-file';
 
+/* ================================
+   1. Get GitHub token of logged user
+================================ */
 export async function getGithubToken() {
-    const { data } = await supabase.auth.getSession();
+    const { data, error } = await supabase.auth.getSession();
+    if (error) return null;
+
+    // Supabase GitHub OAuth token
     return data.session?.provider_token || null;
 }
 
+/* ================================
+   2. Fetch ONLY logged-in user repos
+================================ */
+export async function fetchAllGithubRepos() {
+    const token = await getGithubToken();
+    if (!token) throw new Error("GitHub not connected");
 
-export async function fetchAllGithubRepos(token) {
     let page = 1;
     let allRepos = [];
 
@@ -24,14 +35,23 @@ export async function fetchAllGithubRepos(token) {
         );
 
         const repos = await res.json();
-        if (!repos.length) break;
+        if (!Array.isArray(repos) || repos.length === 0) break;
 
-        allRepos = allRepos.concat(repos);
+        allRepos.push(
+            ...repos.map(repo => ({
+                name: repo.name,
+                owner: repo.owner.login,
+                private: repo.private,
+                default_branch: repo.default_branch
+            }))
+        );
+
         page++;
     }
 
     return allRepos;
 }
+
 
 function shouldSkipGithubFile(path, size = 0) {
     const blockedFolders = [
@@ -109,7 +129,7 @@ export async function importRepoContents({
     token,
     currentPath = ''
 }) {
-    console.log(roomLink)
+
     const items = await fetchRepoTree(owner, repo, token, currentPath);
 
     for (const item of items) {
@@ -139,7 +159,36 @@ export async function importRepoContents({
             });
         }
     }
+    setRoomDetail(roomLink, repo, token);
+
 }
+
+export async function setRoomDetail(roomLink, repo, token) {
+    console.log("setRoomDetail", roomLink, repo, token);
+    const { data, error } = await supabase
+        .from('rooms')
+        .update({
+            github_repo: repo,
+            github_token: token,
+            file_upload_by: "github"
+        })
+        .eq('room_link', roomLink)
+        .select(); // 👈 NO single()
+
+    if (error) {
+        console.error("Failed to update room GitHub details:", error);
+        return { success: false, error };
+    }
+
+    if (!data || data.length === 0) {
+        console.error("No room matched room_link:", roomLink);
+        return { success: false, error: "ROOM_NOT_FOUND_OR_NO_PERMISSION" };
+    }
+
+    return { success: true, data: data[0] };
+}
+
+
 
 async function importGithubFileFromContentAPI({
     owner,

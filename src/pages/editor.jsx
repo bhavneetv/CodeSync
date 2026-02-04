@@ -5,7 +5,8 @@ import {
   ChevronRight, ChevronDown, File, Folder, X, Menu, Terminal as TerminalIcon,
   Maximize2, Minimize2, AlertTriangle, Crown, Shield, LogOut,
   FileCode, FileJson, FileText, Image as ImageIcon, Database, Github, GripVertical,
-  Loader2, Download, MessageCircle, Send, Copy, Check
+  Loader2, Download, MessageCircle, Send, Copy, Check, Key, UserX, UserPlus,
+  CloudUpload, HardDrive
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { getRoomFiles, buildFileTree, readEncryptedFile, handleCreateFolder, createEncryptedFile, updateEncryptedFile, deleteEncryptedFile, renameEncryptedFile, deleteFolder } from '../function/files/create-file';
@@ -87,10 +88,30 @@ function getUserColor(userId) {
   return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
 }
 
+// Detect platform
+function getPlatform() {
+  if (typeof window === 'undefined') return 'web';
+
+  const userAgent = window.navigator.userAgent.toLowerCase();
+
+  // Check if running in Electron (Windows/Desktop App)
+  if (window.process?.type || userAgent.includes('electron')) {
+    return 'windows-app';
+  }
+
+  // Check for mobile
+  if (/android|iphone|ipad|ipod|mobile/i.test(userAgent)) {
+    return 'mobile-app';
+  }
+
+  return 'web';
+}
+
 export default function CodeEditorPage() {
   const [roomType, setRoomType] = useState('solo');
   const [roomName, setRoomName] = useState('Project CodeSpace');
   const [roomCode, setRoomCode] = useState('');
+  const [roomOwnerId, setRoomOwnerId] = useState('');
   const [roomOwnerName, setRoomOwnerName] = useState('');
   const [isEditingRoomName, setIsEditingRoomName] = useState(false);
   const [activeFile, setActiveFile] = useState(null);
@@ -109,6 +130,15 @@ export default function CodeEditorPage() {
   const [isResizing, setIsResizing] = useState(false);
   const [userRole, setUserRole] = useState('editor');
   const [hasNewMessage, setHasNewMessage] = useState(false);
+  const [downloadPath, setDownloadPath] = useState('');
+  const [isEditingDownloadPath, setIsEditingDownloadPath] = useState(false);
+
+  // GitHub integration state
+  const [isGitHubEnabled, setIsGitHubEnabled] = useState(false);
+  const [githubRepo, setGithubRepo] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+  const [isPushingToGitHub, setIsPushingToGitHub] = useState(false);
+  const [showSaveOptions, setShowSaveOptions] = useState(false);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState([]);
@@ -129,7 +159,15 @@ export default function CodeEditorPage() {
   const [createFolderModal, setCreateFolderModal] = useState({ show: false, parentPath: [] });
   const [renameModal, setRenameModal] = useState({ show: false, item: null, path: [] });
   const [deleteModal, setDeleteModal] = useState({ show: false, item: null, path: [] });
+  const [changePasswordModal, setChangePasswordModal] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+
+  // Loading states
+  const [isCreatingFile, setIsCreatingFile] = useState(false);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [isRenamingItem, setIsRenamingItem] = useState(false);
+  const [isDeletingItem, setIsDeletingItem] = useState(false);
+  const [openingFiles, setOpeningFiles] = useState(new Set());
 
   const [fileTree, setFileTree] = useState(initialFileTree);
   const [isSaving, setIsSaving] = useState(false);
@@ -142,10 +180,15 @@ export default function CodeEditorPage() {
   const realtimeChannelRef = useRef(null);
   const isApplyingRemoteChangeRef = useRef(false);
   const activeFileRef = useRef(null);
+  const pendingSaveTimeoutRef = useRef(null);
+  const lastSavedContentRef = useRef({});
+  const broadcastDebounceRef = useRef({});
 
   const [isDesktopDrawer, setIsDesktopDrawer] = useState(typeof window !== 'undefined' && window.innerWidth >= 1024);
 
   const roomLink = new URLSearchParams(window.location.search).get("roomId");
+  const currentPlatform = getPlatform();
+  const isDownloadPathSupported = currentPlatform === 'mobile-app' || currentPlatform === 'windows-app';
 
   const fetch = async () => {
     const roomInfo = await isRoomValid(roomLink);
@@ -166,7 +209,7 @@ export default function CodeEditorPage() {
     try {
       const { data: roomData, error } = await supabase
         .from('rooms')
-        .select('room_name, room_code,type, owner_id')
+        .select('room_name, room_code, type, owner_id, file_upload_by, github_repo, github_token')
         .eq('room_link', roomLink)
         .single();
 
@@ -176,6 +219,14 @@ export default function CodeEditorPage() {
         setRoomName(roomData.room_name || 'Project CodeSpace');
         setRoomCode(roomData.room_code || '');
         setRoomType(roomData.type || 'permanent');
+        setRoomOwnerId(roomData.owner_id);
+
+        // Check if GitHub is enabled
+        if (roomData.file_upload_by === 'github') {
+          setIsGitHubEnabled(true);
+          setGithubRepo(roomData.github_repo || '');
+          setGithubToken(roomData.github_token || '');
+        }
 
         // Fetch owner name
         if (roomData.owner_id) {
@@ -191,10 +242,54 @@ export default function CodeEditorPage() {
             setRoomOwnerName("Deleted User");
           }
         }
-
       }
     } catch (err) {
       console.error('Failed to fetch room data:', err);
+    }
+  };
+
+  // Fetch download path for current user
+  const fetchDownloadPath = async (userId) => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+
+      const { data, error } = await supabase
+        .from('room_members')
+        .select('download_path')
+        .eq('room_id', roomId)
+        .eq('join_token', token)
+        .single();
+
+      if (!error && data?.download_path) {
+        setDownloadPath(data.download_path);
+      }
+    } catch (err) {
+      console.error('Failed to fetch download path:', err);
+    }
+  };
+
+  // Save download path
+  const saveDownloadPath = async (path) => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+
+      const { error } = await supabase
+        .from('room_members')
+        .update({ download_path: path })
+        .eq('room_id', roomId)
+        .eq('join_token', token);
+
+      if (error) throw error;
+
+      setDownloadPath(path);
+      return { success: true };
+    } catch (err) {
+      console.error('Failed to save download path:', err);
+      return { success: false, error: err.message };
     }
   };
 
@@ -222,9 +317,15 @@ export default function CodeEditorPage() {
       if (realtimeChannelRef.current) {
         realtimeChannelRef.current.unsubscribe();
       }
+      if (pendingSaveTimeoutRef.current) {
+        clearTimeout(pendingSaveTimeoutRef.current);
+      }
+      // Clear all broadcast debounce timers
+      Object.values(broadcastDebounceRef.current).forEach(timer => clearTimeout(timer));
     };
   }, [roomLink]);
 
+  // FIX #3: Verify access and check if user is kicked
   const verifyAccess = async () => {
     const params = new URLSearchParams(window.location.search);
     const roomId = params.get("roomId");
@@ -239,7 +340,7 @@ export default function CodeEditorPage() {
 
     const { data, error } = await supabase
       .from("room_members")
-      .select("role, user_id")
+      .select("role, user_id, kicked_user")
       .eq("room_id", ID)
       .eq("join_token", token)
       .single();
@@ -249,16 +350,21 @@ export default function CodeEditorPage() {
       window.location.href = "/create-room";
       return;
     }
-
-    setUserRole("editor");
+    console.log(error);
+    // FIX #3: Check if user is kicked
+    if (data.kicked_user && data.kicked_user.kicked === true) {
+      alert('You have been removed from this room.');
+      window.location.href = "/create-room";
+      return;
+    }
+    // console.log(data.role);
+    setUserRole(data.role);
     setCurrentUserId(data.user_id);
 
     const userColor = getUserColor(data.user_id);
     setCurrentUserColor(userColor);
 
     let userName = null;
-
-
 
     if (!userName) {
       try {
@@ -268,7 +374,6 @@ export default function CodeEditorPage() {
           .eq("id", data.user_id)
           .single();
 
-        // console.log("userDataError", userDataError);
         if (!userDataError && userData?.name) {
           userName = userData.name;
         }
@@ -283,48 +388,58 @@ export default function CodeEditorPage() {
     }
 
     setCurrentUserName(userName);
-    initializeCollaboration(data.user_id, userName, userColor, token);
+    initializeCollaboration(data.user_id, userName, userColor, token, data.role);
+    fetchDownloadPath(data.user_id);
   };
 
   // Initialize realtime collaboration
-  const initializeCollaboration = async (userId, userName, userColor, token) => {
+  const initializeCollaboration = async (
+    userId,
+    userName,
+    userColor,
+    token,
+    role
+  ) => {
     if (!roomLink || !userId) return;
 
     const channel = supabase.channel(`room:${roomLink}`, {
       config: {
         broadcast: { self: false },
-        presence: { key: token }
+        presence: { key: userId }
       }
     });
 
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const users = [];
+    /* -------------------- PRESENCE SYNC -------------------- */
+    channel.on('presence', { event: 'sync' }, () => {
+      const state = channel.presenceState();
+      console.log('Presence synced', state);
+      const users = [];
 
-        Object.keys(state).forEach(key => {
-          const presences = state[key];
-          presences.forEach(presence => {
-            users.push({
-              userId: presence.userId,
-              userName: presence.userName,
-              color: presence.color,
-              activeFile: presence.activeFile
-            });
+      Object.values(state).forEach(presences => {
+        presences.forEach(presence => {
+          users.push({
+            userId: presence.userId,
+            userName: presence.userName,
+            color: presence.color,
+            activeFile: presence.activeFile ?? null,
+            role: presence.role ?? 'member',
+            online: true
           });
         });
-
-        setConnectedUsers(users);
-        // console.log('[Collab] Connected users:', users.length);
-      })
-      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-        // console.log('[Collab] User joined:', newPresences);
-      })
-      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-        // console.log('[Collab] User left:', leftPresences);
       });
 
-    // Listen for cursor movements
+      setConnectedUsers(users);
+    });
+
+    channel.on('presence', { event: 'join' }, ({ newPresences }) => {
+      console.log('User joined:', newPresences);
+    });
+
+    channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
+      console.log('User left:', leftPresences);
+    });
+
+    /* -------------------- CURSOR -------------------- */
     channel.on('broadcast', { event: 'cursor' }, ({ payload }) => {
       if (payload.userId !== userId) {
         setRemoteCursors(prev => ({
@@ -339,7 +454,7 @@ export default function CodeEditorPage() {
       }
     });
 
-    // Listen for selections
+    /* -------------------- SELECTION -------------------- */
     channel.on('broadcast', { event: 'selection' }, ({ payload }) => {
       if (payload.userId !== userId) {
         setRemoteSelections(prev => ({
@@ -353,18 +468,88 @@ export default function CodeEditorPage() {
       }
     });
 
-    // Listen for content changes - ALL FILES
+    /* -------------------- CONTENT CHANGE -------------------- */
     channel.on('broadcast', { event: 'content-change' }, ({ payload }) => {
-      // console.log('[Collab] Received content change from:', payload.userId, 'for file:', payload.fileId);
+      if (payload.userId === userId) return;
 
-      if (payload.userId !== userId) {
-        // Update the file content cache
+      setAllFileContents(prev => ({
+        ...prev,
+        [payload.fileId]: payload.content
+      }));
+
+      setOpenTabs(prev =>
+        prev.map(t =>
+          t.id === payload.fileId
+            ? { ...t, content: payload.content, isDirty: false }
+            : t
+        )
+      );
+
+      if (
+        payload.fileId === activeFileRef.current?.id &&
+        editorRef.current &&
+        !isApplyingRemoteChangeRef.current
+      ) {
+        const model = editorRef.current.getModel();
+        if (!model) return;
+
+        const current = model.getValue();
+        if (current === payload.content) return;
+
+        isApplyingRemoteChangeRef.current = true;
+
+        const position = editorRef.current.getPosition();
+        const scrollTop = editorRef.current.getScrollTop();
+
+        editorRef.current.setValue(payload.content);
+
+        if (position) editorRef.current.setPosition(position);
+        editorRef.current.setScrollTop(scrollTop);
+
+        editorContentRef.current = payload.content;
+        setEditorContent(payload.content);
+
+        setTimeout(() => {
+          isApplyingRemoteChangeRef.current = false;
+        }, 100);
+      }
+    });
+
+    /* -------------------- FILE CONTENT REQUEST -------------------- */
+    channel.on(
+      'broadcast',
+      { event: 'request-file-content' },
+      ({ payload }) => {
+        if (payload.requesterId === userId) return;
+
+        const tab = openTabs.find(t => t.id === payload.fileId);
+        if (!tab) return;
+
+        channel.send({
+          type: 'broadcast',
+          event: 'file-content-response',
+          payload: {
+            fileId: payload.fileId,
+            content: tab.content ?? '',
+            responderId: userId,
+            requesterId: payload.requesterId
+          }
+        });
+      }
+    );
+
+    /* -------------------- FILE CONTENT RESPONSE -------------------- */
+    channel.on(
+      'broadcast',
+      { event: 'file-content-response' },
+      ({ payload }) => {
+        if (payload.requesterId !== userId) return;
+
         setAllFileContents(prev => ({
           ...prev,
           [payload.fileId]: payload.content
         }));
 
-        // Update tabs
         setOpenTabs(prev =>
           prev.map(t =>
             t.id === payload.fileId
@@ -373,69 +558,64 @@ export default function CodeEditorPage() {
           )
         );
 
-        // If this is the active file, update editor
-        const currentActiveFileId = activeFileRef.current?.id;
-        if (payload.fileId === currentActiveFileId && editorRef.current) {
-          isApplyingRemoteChangeRef.current = true;
-
-          setTimeout(() => {
-            const model = editorRef.current?.getModel();
-            if (model) {
-              const currentContent = model.getValue();
-              if (currentContent !== payload.content) {
-                const position = editorRef.current.getPosition();
-                editorRef.current.setValue(payload.content);
-                if (position) {
-                  editorRef.current.setPosition(position);
-                }
-                editorContentRef.current = payload.content;
-                setEditorContent(payload.content);
-              }
-            }
-            setTimeout(() => {
-              isApplyingRemoteChangeRef.current = false;
-            }, 200);
-          }, 50);
+        if (
+          activeFileRef.current?.id === payload.fileId &&
+          editorRef.current
+        ) {
+          editorRef.current.setValue(payload.content);
+          editorContentRef.current = payload.content;
+          setEditorContent(payload.content);
         }
       }
-    });
+    );
 
-    // Listen for chat messages
+    /* -------------------- CHAT -------------------- */
     channel.on('broadcast', { event: 'chat-message' }, ({ payload }) => {
-      if (payload.userId !== userId) {
-        setChatMessages(prev => [...prev, {
+      if (payload.userId === userId) return;
+
+      setChatMessages(prev => [
+        ...prev,
+        {
           id: Date.now() + Math.random(),
           userId: payload.userId,
           userName: payload.userName,
           color: payload.color,
           message: payload.message,
           timestamp: new Date(payload.timestamp)
-        }]);
-
-        // Show notification if chat is not active
-        if (bottomPanelMode !== 'chat' || !showBottomPanel) {
-          setHasNewMessage(true);
         }
+      ]);
+
+      if (bottomPanelMode !== 'chat' || !showBottomPanel) {
+        setHasNewMessage(true);
       }
     });
 
-    // Listen for file tree updates
-    channel.on('broadcast', { event: 'file-created' }, ({ payload }) => {
-      if (payload.userId !== userId) {
-        // console.log('[Collab] File created by another user:', payload);
-        // Refresh file tree
-        loadFilesFromServer();
+    /* -------------------- FILE TREE -------------------- */
+    ['file-created', 'file-renamed', 'file-deleted'].forEach(event => {
+      channel.on('broadcast', { event }, ({ payload }) => {
+        if (payload.userId !== userId) {
+          loadFilesFromServer();
+        }
+      });
+    });
+
+    /* -------------------- KICK -------------------- */
+    channel.on('broadcast', { event: 'user-kicked' }, ({ payload }) => {
+      if (payload.userId === userId) {
+        alert('You have been removed from this room by the owner.');
+        window.location.href = '/create-room';
       }
     });
 
-    await channel.subscribe(async (status) => {
+    /* -------------------- SUBSCRIBE & TRACK -------------------- */
+    await channel.subscribe(async status => {
       if (status === 'SUBSCRIBED') {
-        // console.log('[Collab] ✓ Subscribed to channel');
         await channel.track({
-          userId: userId,
-          userName: userName,
+          userId,
+          userName,
           color: userColor,
           activeFile: null,
+          role: role,
           online_at: new Date().toISOString()
         });
       }
@@ -443,6 +623,7 @@ export default function CodeEditorPage() {
 
     realtimeChannelRef.current = channel;
   };
+
 
   const loadFilesFromServer = async () => {
     try {
@@ -545,27 +726,96 @@ export default function CodeEditorPage() {
     return decrypt(text);
   }
 
+  // FIX #1: Improved file opening with proper content loading
   const openFile = async (fileNode, openInBackground = false) => {
+    // Prevent duplicate opens
+    if (openingFiles.has(fileNode.id)) {
+      return;
+    }
+
+    // Check if already open
+    const existingTab = openTabs.find(tab => tab.id === fileNode.id);
+    if (existingTab && !openInBackground) {
+      // FIX #1: Always ensure we have the latest content from server when switching tabs
+      if (existingTab.content === '' || existingTab.content === undefined) {
+        console.log('Tab content is empty, fetching from server');
+        try {
+          const content = await readEncryptedFile(fileNode.fullPath);
+
+          setAllFileContents(prev => ({
+            ...prev,
+            [fileNode.id]: content
+          }));
+
+          setOpenTabs(prev => prev.map(tab =>
+            tab.id === fileNode.id ? { ...tab, content, isDirty: false } : tab
+          ));
+
+          setActiveFile({
+            ...existingTab,
+            content
+          });
+          setEditorContent(content);
+          editorContentRef.current = content;
+          lastSavedContentRef.current[fileNode.id] = content;
+        } catch (err) {
+          console.error("Failed to load file content:", err);
+          alert(`Failed to load file: ${err.message}`);
+        }
+      } else {
+        setActiveFile(existingTab);
+        setEditorContent(existingTab.content || '');
+        editorContentRef.current = existingTab.content || '';
+      }
+      return;
+    }
+
+    setOpeningFiles(prev => new Set(prev).add(fileNode.id));
+
     if (window.innerWidth < 768) {
       setShowFileExplorer(false);
     }
 
     try {
-      // Check if we have cached content
-      let content = allFileContents[fileNode.id];
+      let content = '';
 
-      // If not cached, read from server
-      if (content === undefined) {
+      // FIX #1: Always try to load from server first
+      try {
         content = await readEncryptedFile(fileNode.fullPath);
-        setAllFileContents(prev => ({
-          ...prev,
-          [fileNode.id]: content
-        }));
+        console.log('Loaded from server:', fileNode.id, content.length, 'chars');
+      } catch (err) {
+        console.error('Failed to load from server:', err);
+
+        // FIX #1: Request content from other connected users
+        if (realtimeChannelRef.current && currentUserId) {
+          console.log('Requesting content from other users');
+          realtimeChannelRef.current.send({
+            type: 'broadcast',
+            event: 'request-file-content',
+            payload: {
+              fileId: fileNode.id,
+              requesterId: currentUserId
+            }
+          });
+
+          // Wait a bit for response
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Check if we got content
+          if (allFileContents[fileNode.id]) {
+            content = allFileContents[fileNode.id];
+            console.log('Received content from other user');
+          } else {
+            content = ''; // Default to empty
+          }
+        }
       }
 
-      // console.log('[Open] File content loaded:', content?.substring(0, 50));
-
-      const existingTab = openTabs.find(tab => tab.id === fileNode.id);
+      // Update cache
+      setAllFileContents(prev => ({
+        ...prev,
+        [fileNode.id]: content
+      }));
 
       if (existingTab) {
         setOpenTabs(prev => prev.map(tab =>
@@ -581,6 +831,7 @@ export default function CodeEditorPage() {
           });
           setEditorContent(content);
           editorContentRef.current = content;
+          lastSavedContentRef.current[fileNode.id] = content;
         }
         return;
       }
@@ -599,13 +850,17 @@ export default function CodeEditorPage() {
         setActiveFile(newTab);
         setEditorContent(content);
         editorContentRef.current = content;
+        lastSavedContentRef.current[fileNode.id] = content;
       }
     } catch (err) {
       console.error("Open file failed:", err);
-      if (!openInBackground) {
-        setEditorContent("// Failed to load file");
-        editorContentRef.current = "// Failed to load file";
-      }
+      alert(`Failed to open file: ${err.message}`);
+    } finally {
+      setOpeningFiles(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(fileNode.id);
+        return newSet;
+      });
     }
   };
 
@@ -638,7 +893,6 @@ export default function CodeEditorPage() {
     if (activeFile && editorRef.current) {
       const tab = openTabs.find(t => t.id === activeFile.id);
       if (tab && tab.content !== editorContentRef.current) {
-        // console.log('[Editor] Syncing editor with tab content on switch');
         editorRef.current.setValue(tab.content || '');
         editorContentRef.current = tab.content || '';
       }
@@ -811,13 +1065,12 @@ export default function CodeEditorPage() {
 
   }, [remoteCursors, remoteSelections, activeFile]);
 
+  // FIX #1: Improved editor change handling with better debouncing
   const handleEditorChange = (value) => {
+    // Don't block on remote changes
     if (isApplyingRemoteChangeRef.current) {
-      // console.log('[Editor] Skipping broadcast - applying remote change');
       return;
     }
-
-    // console.log('[Editor] Local change detected, length:', value?.length || 0);
 
     editorContentRef.current = value;
     setEditorContent(value);
@@ -838,76 +1091,263 @@ export default function CodeEditorPage() {
       )
     );
 
+    // Broadcast changes with debouncing per file
     if (realtimeChannelRef.current && currentUserId && activeFile) {
-      clearTimeout(window.contentChangeTimeout);
-      window.contentChangeTimeout = setTimeout(() => {
-        // console.log('[Editor] Broadcasting change to others');
+      const fileId = activeFile.id;
+
+      // Clear existing timeout for this file
+      if (broadcastDebounceRef.current[fileId]) {
+        clearTimeout(broadcastDebounceRef.current[fileId]);
+      }
+
+      // Set new timeout
+      broadcastDebounceRef.current[fileId] = setTimeout(() => {
         realtimeChannelRef.current.send({
           type: 'broadcast',
           event: 'content-change',
           payload: {
             userId: currentUserId,
             content: value,
-            fileId: activeFile.id
+            fileId: fileId
           }
         });
+        delete broadcastDebounceRef.current[fileId];
       }, 300);
     }
   };
 
-  // SAVE ALL DIRTY FILES
-  const handleSaveAll = async () => {
+  // FIX #2: Improved save with verification (offline save)
+  const handleSaveOffline = async () => {
     if (!canEdit) {
-      // console.log('[Save] Skipped - no edit permission');
       return;
     }
 
     const dirtyTabs = openTabs.filter(t => t.isDirty);
     if (dirtyTabs.length === 0) {
-      // console.log('[Save] No files to save');
       return;
     }
 
     setIsSaving(true);
-    // console.log(`[Save] Saving ${dirtyTabs.length} dirty files...`);
+    setShowSaveOptions(false);
 
     try {
       const savePromises = dirtyTabs.map(async (tab) => {
         const content = allFileContents[tab.id] || tab.content || '';
+
+        // Only save if content actually changed from last saved version
+        if (lastSavedContentRef.current[tab.id] === content) {
+          return { tabId: tab.id, success: true, skipped: true };
+        }
+
         const result = await updateEncryptedFile(tab.fullPath, content);
+
+        if (result.success) {
+          lastSavedContentRef.current[tab.id] = content;
+
+          // FIX #2: Verify the save by reading back
+          try {
+            const verifyContent = await readEncryptedFile(tab.fullPath);
+            if (verifyContent !== content) {
+              console.error('Save verification failed for:', tab.id);
+              return { tabId: tab.id, success: false, error: 'Verification failed' };
+            }
+          } catch (verifyErr) {
+            console.error('Save verification error:', verifyErr);
+            // Continue anyway, save might have worked
+          }
+        }
+
         return { tabId: tab.id, success: result.success, error: result.error };
       });
 
       const results = await Promise.all(savePromises);
-      const failed = results.filter(r => !r.success);
+      const failed = results.filter(r => !r.success && !r.skipped);
+      const saved = results.filter(r => r.success && !r.skipped);
 
       if (failed.length === 0) {
-        // console.log('[Save] All files saved successfully');
-
         // Mark all tabs as not dirty
         setOpenTabs(prev =>
           prev.map(t => ({ ...t, isDirty: false }))
         );
 
-        // Show success feedback
-        alert(`✓ Saved ${dirtyTabs.length} file(s) successfully!`);
+        if (saved.length > 0) {
+          // Show a brief success message
+          const successMsg = document.createElement('div');
+          successMsg.textContent = `✓ Saved ${saved.length} file(s) offline`;
+          successMsg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:14px;font-weight:500;';
+          document.body.appendChild(successMsg);
+          setTimeout(() => successMsg.remove(), 2000);
+        }
       } else {
-        console.error('[Save] Some files failed to save:', failed);
-        alert(`⚠️ ${failed.length} file(s) failed to save. Please try again.`);
+        console.error('Some files failed to save:', failed);
+        alert(`⚠️ ${failed.length} file(s) failed to save:\n${failed.map(f => f.error).join('\n')}\n\nPlease try again.`);
       }
 
     } catch (err) {
-      console.error('[Save] Failed:', err);
+      console.error('Failed to save:', err);
       alert(`Failed to save files: ${err.message}\n\nPlease try again.`);
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Create new file - FIXED with broadcast
+  // NEW: Push to GitHub function
+  const handlePushToGitHub = async () => {
+    if (!isGitHubEnabled || !githubRepo || !githubToken) {
+      alert('GitHub integration is not configured for this room.');
+      return;
+    }
+
+    const dirtyTabs = openTabs.filter(t => t.isDirty);
+    if (dirtyTabs.length === 0) {
+      alert('No changes to push.');
+      return;
+    }
+
+    setIsPushingToGitHub(true);
+    setShowSaveOptions(false);
+
+    try {
+      // First, save offline
+      await handleSaveOffline();
+
+
+
+        let tes = "bhavneetv/fIrst"
+      // Parse repo (format: owner/repo)
+      const [owner, repo] = tes.split('/');
+      if (!owner || !repo) {
+        throw new Error('Invalid GitHub repository format. Expected: owner/repo');
+      }
+
+      // Get default branch
+      const branchResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}`,
+        {
+          headers: {
+            'Authorization': `token ${githubToken}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        }
+      );
+
+      if (!branchResponse.ok) {
+        throw new Error('Failed to fetch repository information');
+      }
+
+      const repoData = await branchResponse.json();
+      const defaultBranch = repoData.default_branch || 'main';
+
+      // Push each dirty file
+      const pushPromises = dirtyTabs.map(async (tab) => {
+        const content = allFileContents[tab.id] || tab.content || '';
+        const base64Content = btoa(unescape(encodeURIComponent(content)));
+
+        // Get current file SHA if it exists
+        let sha = null;
+        try {
+          const fileResponse = await fetch(
+            `https://api.github.com/repos/${owner}/${repo}/contents/${tab.fullPath}`,
+            {
+              headers: {
+                'Authorization': `token ${githubToken}`,
+                'Accept': 'application/vnd.github.v3+json'
+              }
+            }
+          );
+
+          if (fileResponse.ok) {
+            const fileData = await fileResponse.json();
+            sha = fileData.sha;
+          }
+        } catch (err) {
+          console.log('File does not exist yet:', tab.fullPath);
+        }
+
+        // Create or update file
+        const body = {
+          message: `Update ${tab.name} from CodeSpace`,
+          content: base64Content,
+          branch: defaultBranch
+        };
+
+        if (sha) {
+          body.sha = sha;
+        }
+
+        const response = await fetch(
+          `https://api.github.com/repos/bhavneetv/${repo}/contents/${tab.fullPath}`,
+          {
+            method: 'PUT',
+            headers: {
+              'Authorization': `token ${githubToken}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/vnd.github.v3+json'
+            },
+            body: JSON.stringify(body)
+          }
+        );
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(`Failed to push ${tab.name}: ${error.message}`);
+        }
+
+        return { tabId: tab.id, success: true, name: tab.name };
+      });
+
+      const results = await Promise.all(pushPromises);
+      const successful = results.filter(r => r.success);
+
+      // Show success message
+      const successMsg = document.createElement('div');
+      successMsg.textContent = `✓ Pushed ${successful.length} file(s) to GitHub`;
+      successMsg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:14px;font-weight:500;';
+      document.body.appendChild(successMsg);
+      setTimeout(() => successMsg.remove(), 3000);
+
+    } catch (err) {
+      console.error('Failed to push to GitHub:', err);
+      alert(`Failed to push to GitHub: ${err.message}`);
+    } finally {
+      setIsPushingToGitHub(false);
+    }
+  };
+
+  // FIX #6: Create new file with proper tree traversal and validation
   const handleCreateFile = async (fileName, extension, parentPath) => {
+    setIsCreatingFile(true);
     try {
       const folderPath = resolveFolderPath(fileTree, parentPath);
+      const fullFileName = `${fileName}.${extension}`;
+
+      // FIX #6: Check for duplicate with proper null checks
+      const checkDuplicate = (node, path) => {
+        if (!node) {
+          console.error('Node is undefined in checkDuplicate');
+          return false;
+        }
+
+        if (path.length === 0) {
+          return node.children?.some(child =>
+            child && child.type === 'file' && child.name === fullFileName
+          ) || false;
+        }
+
+        const [idx, ...rest] = path;
+        if (!node.children || !node.children[idx]) {
+          console.error('Invalid path in checkDuplicate');
+          return false;
+        }
+        return checkDuplicate(node.children[idx], rest);
+      };
+
+      if (checkDuplicate(fileTree, parentPath)) {
+        alert(`A file named "${fullFileName}" already exists in this location.`);
+        setCreateFileModal({ show: false, parentPath: [] });
+        setIsCreatingFile(false);
+        return;
+      }
 
       const result = await createEncryptedFile(
         roomLink,
@@ -921,13 +1361,19 @@ export default function CodeEditorPage() {
       if (result.success) {
         const newFile = {
           id: result.data.id,
-          name: `${fileName}.${extension}`,
+          name: fullFileName,
           type: "file",
           fullPath: result.data.storage_path,
-          content: null,
+          content: "",
         };
 
+        // FIX #6: Improved tree update with null checks
         const addFileToTree = (node, path) => {
+          if (!node) {
+            console.error('Node is undefined in addFileToTree');
+            return fileTree; // Return original tree
+          }
+
           if (path.length === 0) {
             return {
               ...node,
@@ -936,6 +1382,15 @@ export default function CodeEditorPage() {
           }
 
           const [idx, ...rest] = path;
+
+          if (!node.children || !node.children[idx]) {
+            console.error('Invalid path in addFileToTree, adding to root');
+            return {
+              ...node,
+              children: [...(node.children || []), newFile],
+            };
+          }
+
           return {
             ...node,
             children: node.children.map((child, i) =>
@@ -945,6 +1400,12 @@ export default function CodeEditorPage() {
         };
 
         setFileTree((prev) => addFileToTree(prev, parentPath));
+
+        // Initialize file content in cache
+        setAllFileContents(prev => ({
+          ...prev,
+          [newFile.id]: ""
+        }));
 
         // Broadcast file creation
         if (realtimeChannelRef.current && currentUserId) {
@@ -957,18 +1418,17 @@ export default function CodeEditorPage() {
             }
           });
         }
-
-        // console.log('[CreateFile] File created successfully');
       } else {
-        console.error('[CreateFile] Failed:', result.error);
+        console.error('Failed to create file:', result.error);
         alert(`Failed to create file: ${result.error}`);
       }
     } catch (err) {
-      console.error("[CreateFile] Error:", err);
+      console.error("Error creating file:", err);
       alert(`Failed to create file: ${err.message}`);
+    } finally {
+      setCreateFileModal({ show: false, parentPath: [] });
+      setIsCreatingFile(false);
     }
-
-    setCreateFileModal({ show: false, parentPath: [] });
   };
 
   const resolveFolderPath = (tree, indexPath) => {
@@ -993,21 +1453,35 @@ export default function CodeEditorPage() {
   const handleCreateFolder = async (folderName, parentPath) => {
     if (!folderName) return;
 
+    setIsCreatingFolder(true);
     try {
       const safePath = normalizeFolderParentPath(fileTree, parentPath);
+
+      // Check for duplicate folder
+      const checkDuplicate = (node, path) => {
+        if (!node) return false;
+
+        if (path.length === 0) {
+          return node.children?.some(child =>
+            child && child.type === 'folder' && child.name === folderName
+          ) || false;
+        }
+        const [idx, ...rest] = path;
+        if (!node.children || !node.children[idx]) return false;
+        return checkDuplicate(node.children[idx], rest);
+      };
+
+      if (checkDuplicate(fileTree, safePath)) {
+        alert(`A folder named "${folderName}" already exists in this location.`);
+        setCreateFolderModal({ show: false, parentPath: [] });
+        setIsCreatingFolder(false);
+        return;
+      }
 
       const addFolder = (node, path) => {
         if (!node) return node;
 
         if (path.length === 0) {
-          const exists = node.children?.some(
-            (c) => c.type === "folder" && c.name === folderName
-          );
-          if (exists) {
-            alert('Folder already exists!');
-            return node;
-          }
-
           return {
             ...node,
             isExpanded: true,
@@ -1034,13 +1508,25 @@ export default function CodeEditorPage() {
       };
 
       setFileTree((prev) => addFolder(prev, safePath));
-      // console.log('[CreateFolder] Folder created in UI:', folderName);
-    } catch (err) {
-      console.error('[CreateFolder] Error:', err);
-      alert(`Failed to create folder: ${err.message}`);
-    }
 
-    setCreateFolderModal({ show: false, parentPath: [] });
+      // Broadcast folder creation
+      if (realtimeChannelRef.current && currentUserId) {
+        realtimeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'file-created',
+          payload: {
+            userId: currentUserId,
+            folder: folderName
+          }
+        });
+      }
+    } catch (err) {
+      console.error('Error creating folder:', err);
+      alert(`Failed to create folder: ${err.message}`);
+    } finally {
+      setCreateFolderModal({ show: false, parentPath: [] });
+      setIsCreatingFolder(false);
+    }
   };
 
   const normalizeFolderParentPath = (tree, path) => {
@@ -1070,6 +1556,7 @@ export default function CodeEditorPage() {
       return;
     }
 
+    setIsRenamingItem(true);
     try {
       const item = renameModal.item;
 
@@ -1116,7 +1603,18 @@ export default function CodeEditorPage() {
             setActiveFile(prev => ({ ...prev, name: newName }));
           }
 
-          // console.log('[Rename] File renamed successfully');
+          // Broadcast rename
+          if (realtimeChannelRef.current && currentUserId) {
+            realtimeChannelRef.current.send({
+              type: 'broadcast',
+              event: 'file-renamed',
+              payload: {
+                userId: currentUserId,
+                fileId: item.id,
+                newName: newName
+              }
+            });
+          }
         } else {
           alert(`Failed to rename: ${result.error}`);
         }
@@ -1143,14 +1641,26 @@ export default function CodeEditorPage() {
         };
 
         setFileTree((prev) => renameInTree(prev, renameModal.path));
-        console.log('[Rename] Folder renamed in UI');
+
+        // Broadcast rename
+        if (realtimeChannelRef.current && currentUserId) {
+          realtimeChannelRef.current.send({
+            type: 'broadcast',
+            event: 'file-renamed',
+            payload: {
+              userId: currentUserId,
+              folderName: newName
+            }
+          });
+        }
       }
     } catch (err) {
-      console.error('[Rename] Error:', err);
+      console.error('Error renaming:', err);
       alert(`Failed to rename: ${err.message}`);
+    } finally {
+      setRenameModal({ show: false, item: null, path: [] });
+      setIsRenamingItem(false);
     }
-
-    setRenameModal({ show: false, item: null, path: [] });
   };
 
   const handleDelete = async () => {
@@ -1159,6 +1669,7 @@ export default function CodeEditorPage() {
       return;
     }
 
+    setIsDeletingItem(true);
     try {
       const item = deleteModal.item;
 
@@ -1203,29 +1714,30 @@ export default function CodeEditorPage() {
             }
           }
 
-          console.log('[Delete] File deleted successfully');
+          // Broadcast deletion
+          if (realtimeChannelRef.current && currentUserId) {
+            realtimeChannelRef.current.send({
+              type: 'broadcast',
+              event: 'file-deleted',
+              payload: {
+                userId: currentUserId,
+                fileId: item.id
+              }
+            });
+          }
         } else {
           alert(`Failed to delete: ${result.error}`);
         }
       } else {
-        const removeFolderById = (node, targetId) => {
-          if (!node || !Array.isArray(node.children)) return node;
-
-          return {
-            ...node,
-            children: node.children
-              .filter(child => child.id !== targetId)
-              .map(child => removeFolderById(child, targetId)),
-          };
-        };
-
+        // Folder deletion logic here
       }
     } catch (err) {
-      console.error('[Delete] Error:', err);
+      console.error('Error deleting:', err);
       alert(`Failed to delete: ${err.message}`);
+    } finally {
+      setDeleteModal({ show: false, item: null, path: [] });
+      setIsDeletingItem(false);
     }
-
-    setDeleteModal({ show: false, item: null, path: [] });
   };
 
   const handleSendMessage = () => {
@@ -1266,27 +1778,120 @@ export default function CodeEditorPage() {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
-  const handleKickUser = (userId) => {
-    console.log('Kicking user:', userId);
+  // FIX #3: Improved kick user with proper database update
+  const handleKickUser = async (userId) => {
+    if (!isOwner) return;
+
+    try {
+      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+
+      // FIX #3: Update kick_user column with proper JSONB structure
+      const { error } = await supabase
+        .from('room_members')
+        .update({
+          kicked_user: { kicked: true, kicked_at: new Date().toISOString() }
+        })
+        .eq('room_id', roomId)
+        .eq('user_id', userId);
+
+      if (error) {
+        console.error('Kick user database error:', error);
+        throw error;
+      }
+
+      // Broadcast kick event
+      if (realtimeChannelRef.current) {
+        realtimeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'user-kicked',
+          payload: { userId }
+        });
+      }
+
+      // Remove from connected users list
+      setConnectedUsers(prev => prev.filter(u => u.userId !== userId));
+
+      alert('User has been removed from the room.');
+    } catch (err) {
+      console.error('Failed to kick user:', err);
+      alert(`Failed to remove user: ${err.message}`);
+    }
   };
 
-  const handleMakeAdmin = (userId) => {
-    console.log('Making admin:', userId);
+  // FIX #4: Improved make admin with proper error handling and refresh
+  const handleMakeAdmin = async (userId) => {
+    if (!isOwner) return;
+
+    try {
+      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+
+      const { error } = await supabase
+        .from('room_members')
+        .update({ role: 'admin' })
+        .eq('room_id', roomId)
+        .eq('user_id', userId);
+
+      if (error) {
+        console.error('Make admin database error:', error);
+        throw error;
+      }
+
+      // FIX #4: Verify the update
+      const { data: verifyData, error: verifyError } = await supabase
+        .from('room_members')
+        .select('role')
+        .eq('room_id', roomId)
+        .eq('user_id', userId)
+        .single();
+
+      if (verifyError || verifyData.role !== 'admin') {
+        throw new Error('Failed to verify admin promotion');
+      }
+
+      // Update connected users
+      setConnectedUsers(prev => prev.map(u =>
+        u.userId === userId ? { ...u, role: 'admin' } : u
+      ));
+
+      alert('User has been promoted to admin successfully.');
+
+      // Reload files to get fresh data
+      await loadFilesFromServer();
+    } catch (err) {
+      console.error('Failed to make admin:', err);
+      alert(`Failed to promote user: ${err.message}`);
+    }
+  };
+
+  const handleChangePassword = async (newPassword) => {
+    if (!isOwner) return;
+
+    try {
+      const { error } = await supabase
+        .from('rooms')
+        .update({ room_code: newPassword })
+        .eq('room_link', roomLink);
+
+      if (error) throw error;
+
+      setRoomCode(newPassword);
+      alert('Room password has been changed successfully.');
+    } catch (err) {
+      console.error('Failed to change password:', err);
+      alert(`Failed to change password: ${err.message}`);
+    }
   };
 
   const handleRun = () => {
     console.log('Running code...');
   };
 
-  const handlePushGitHub = () => {
-    console.log('Pushing to GitHub...');
-  };
-
   const handleDeleteRoom = () => {
     console.log('Deleting room...');
   };
 
-  const isOwner = userRole === 'owner';
+  const isOwner = userRole === 'owner' || currentUserId === roomOwnerId;
+  const isAdmin = userRole === 'admin' || isOwner;
   const canEdit = isOwner || userRole === 'editor' || userRole === 'admin';
   const onlineCount = connectedUsers.length || users.filter(u => u.online).length;
   const dirtyCount = openTabs.filter(t => t.isDirty).length;
@@ -1497,36 +2102,90 @@ export default function CodeEditorPage() {
             <span className="hidden sm:inline">Run</span>
           </button>
 
-          <button
-            onClick={handleSaveAll}
-            disabled={!canEdit || isSaving || dirtyCount === 0}
-            className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg transition-all modern-button relative ${canEdit && !isSaving && dirtyCount > 0
-              ? 'primary-button text-white'
-              : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-              }`}
-            title={isSaving ? 'Saving...' : dirtyCount > 0 ? `Save ${dirtyCount} file(s)` : 'No changes to save'}
-          >
-            {isSaving ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+          {/* Save button - shows dropdown after initial save */}
+          <div className="relative">
+            {!showSaveOptions ? (
+              <button
+                onClick={async () => {
+                  // First save the files
+                  await handleSaveOffline();
+                  // Then show the options
+                  setShowSaveOptions(true);
+                }}
+                disabled={!canEdit || (isSaving || isPushingToGitHub) || dirtyCount === 0}
+                className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg transition-all modern-button relative ${canEdit && !(isSaving || isPushingToGitHub) && dirtyCount > 0
+                  ? 'primary-button text-white'
+                  : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                  }`}
+                title={
+                  isSaving ? 'Saving...' :
+                    isPushingToGitHub ? 'Pushing to GitHub...' :
+                      dirtyCount > 0 ? `Save ${dirtyCount} file(s)` :
+                        'No changes to save'
+                }
+              >
+                {isSaving || isPushingToGitHub ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                <span className="hidden sm:inline text-xs sm:text-sm font-medium">
+                  {isSaving ? 'Saving...' :
+                    isPushingToGitHub ? 'Pushing...' :
+                      dirtyCount > 0 ? `Save (${dirtyCount})` :
+                        'Save'}
+                </span>
+              </button>
             ) : (
-              <Save className="w-4 h-4" />
-            )}
-            <span className="hidden sm:inline text-xs sm:text-sm font-medium">
-              {isSaving ? 'Saving...' : dirtyCount > 0 ? `Save (${dirtyCount})` : 'Save'}
-            </span>
-          </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveOffline}
+                  disabled={isSaving || dirtyCount === 0}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${isSaving || dirtyCount === 0
+                      ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                      : 'primary-button text-white'
+                    }`}
+                >
+                  {isSaving ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <HardDrive className="w-4 h-4" />
+                  )}
+                  <span className="hidden sm:inline text-xs font-medium">
+                    {isSaving ? 'Saving...' : 'Save Offline'}
+                  </span>
+                </button>
 
-          <button
-            onClick={handlePushGitHub}
-            disabled={!isOwner || roomType === 'temporary'}
-            className={`p-2 rounded-lg transition-all modern-button ${isOwner && roomType !== 'temporary'
-              ? 'hover:bg-slate-700/50 text-slate-200'
-              : 'text-slate-500 cursor-not-allowed opacity-60'
-              }`}
-            title="Push to GitHub"
-          >
-            <Github className="w-4 h-4" />
-          </button>
+                {isGitHubEnabled && (
+                  <button
+                    onClick={handlePushToGitHub}
+                    disabled={isPushingToGitHub || dirtyCount === 0}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${isPushingToGitHub || dirtyCount === 0
+                        ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                        : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
+                      }`}
+                  >
+                    {isPushingToGitHub ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Github className="w-4 h-4" />
+                    )}
+                    <span className="hidden sm:inline text-xs font-medium">
+                      {isPushingToGitHub ? 'Pushing...' : 'Push to GitHub'}
+                    </span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setShowSaveOptions(false)}
+                  className="p-1.5 hover:bg-slate-700/50 rounded transition-all"
+                  title="Close"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
 
           <button
             onClick={() => setShowUsersModal(true)}
@@ -1551,7 +2210,7 @@ export default function CodeEditorPage() {
 
       {/* Main Layout */}
       <div className="flex h-[calc(100vh-48px)]">
-        {/* File Explorer Sidebar */}
+        {/* FIX #5: File Explorer Sidebar with proper mobile layout */}
         <AnimatePresence>
           {showFileExplorer && (
             <motion.aside
@@ -1559,11 +2218,13 @@ export default function CodeEditorPage() {
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: -300, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="glass-strong border-r border-slate-700/60 flex absolute lg:relative h-full z-40 lg:z-0 flex-shrink-0 shadow-2xl"
+              className="glass-strong border-r border-slate-700/60 flex absolute lg:relative z-40 lg:z-0 flex-shrink-0 shadow-2xl"
               style={{
+                // FIX #5: Mobile uses 80% width, desktop uses resizable width
                 width: typeof window !== 'undefined' && window.innerWidth >= 1024
                   ? `${Math.min(drawerMaxWidth, Math.max(drawerMinWidth, drawerWidth))}px`
-                  : '100%',
+                  : '80vw',
+                height: '100%'
               }}
             >
               <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -1575,21 +2236,21 @@ export default function CodeEditorPage() {
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => setCreateFileModal({ show: true, parentPath: [] })}
-                      disabled={!canEdit}
-                      className={`p-1.5 rounded-lg transition-all modern-button ${canEdit ? 'hover:bg-emerald-500/10 text-emerald-400' : 'text-slate-500 cursor-not-allowed opacity-50'
+                      disabled={!canEdit || isCreatingFile}
+                      className={`p-1.5 rounded-lg transition-all modern-button ${canEdit && !isCreatingFile ? 'hover:bg-emerald-500/10 text-emerald-400' : 'text-slate-500 cursor-not-allowed opacity-50'
                         }`}
                       title="New File"
                     >
-                      <Plus className="w-3.5 h-3.5" />
+                      {isCreatingFile ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
                     </button>
                     <button
                       onClick={() => setCreateFolderModal({ show: true, parentPath: [] })}
-                      disabled={!canEdit}
-                      className={`p-1.5 rounded-lg transition-all modern-button ${canEdit ? 'hover:bg-slate-600/30 text-slate-300' : 'text-slate-500 cursor-not-allowed opacity-50'
+                      disabled={!canEdit || isCreatingFolder}
+                      className={`p-1.5 rounded-lg transition-all modern-button ${canEdit && !isCreatingFolder ? 'hover:bg-slate-600/30 text-slate-300' : 'text-slate-500 cursor-not-allowed opacity-50'
                         }`}
                       title="New Folder"
                     >
-                      <FolderPlus className="w-3.5 h-3.5" />
+                      {isCreatingFolder ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FolderPlus className="w-3.5 h-3.5" />}
                     </button>
                   </div>
                 </div>
@@ -1606,6 +2267,7 @@ export default function CodeEditorPage() {
                     onCreateFile={(path) => setCreateFileModal({ show: true, parentPath: path })}
                     onCreateFolder={(path) => setCreateFolderModal({ show: true, parentPath: path })}
                     canEdit={canEdit}
+                    openingFiles={openingFiles}
                   />
                 </div>
               </div>
@@ -1769,168 +2431,399 @@ export default function CodeEditorPage() {
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => setTerminalHeight(terminalHeight === 200 ? 400 : 200)}
-                      className="p-1.5 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
+                      className="p-1.5 hover:bg-slate-700/50 rounded transition-all modern-button"
+                      title={terminalHeight === 200 ? "Maximize" : "Minimize"}
                     >
-                      {terminalHeight === 200 ? <Maximize2 className="w-3.5 h-3.5 text-slate-400" /> : <Minimize2 className="w-3.5 h-3.5 text-slate-400" />}
+                      {terminalHeight === 200 ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
                     </button>
                     <button
                       onClick={() => setShowBottomPanel(false)}
-                      className="p-1.5 hover:bg-red-500/10 rounded-lg transition-all modern-button text-slate-400 hover:text-red-400"
+                      className="p-1.5 hover:bg-slate-700/50 rounded transition-all modern-button"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      <X className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
 
-                {bottomPanelMode === 'terminal' ? (
-                  <div className="flex-1 overflow-y-auto p-4 font-mono text-sm text-emerald-400 bg-slate-950">
-                    <div>$ npm start</div>
-                    <div className="text-slate-400 mt-2">Starting development server...</div>
-                    <div className="text-blue-400 mt-1">Compiled successfully!</div>
-                    <div className="text-slate-400 mt-1">Local: http://localhost:3000</div>
-                    <div className="animate-pulse mt-2">▊</div>
-                  </div>
-                ) : (
-                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-950">
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                      {chatMessages.length === 0 ? (
-                        <div className="text-center text-slate-500 mt-8">
-                          <MessageCircle className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                          <p className="text-sm">No messages yet</p>
-                          <p className="text-xs mt-1">Start a conversation with your team</p>
-                        </div>
-                      ) : (
-                        chatMessages.map((msg) => (
-                          <div
-                            key={msg.id}
-                            className={`flex gap-2 ${msg.userId === currentUserId ? 'flex-row-reverse' : ''}`}
-                          >
+                <div className="flex-1 overflow-hidden">
+                  {bottomPanelMode === 'terminal' ? (
+                    <div className="h-full p-4 font-mono text-sm text-slate-300 overflow-y-auto bg-slate-900/30">
+                      <div className="flex items-center gap-2 text-emerald-400">
+                        <span>$</span>
+                        <span className="text-slate-400">Terminal output will appear here...</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col">
+                      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+                        {chatMessages.map((msg) => (
+                          <div key={msg.id} className="flex gap-2 sm:gap-3">
                             <div
-                              className="w-8 h-8 rounded-full flex items-center justify-center text-white font-semibold text-sm flex-shrink-0"
+                              className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-semibold text-white flex-shrink-0"
                               style={{ backgroundColor: msg.color }}
                             >
                               {msg.userName.charAt(0).toUpperCase()}
                             </div>
-                            <div className={`flex-1 ${msg.userId === currentUserId ? 'items-end' : 'items-start'} flex flex-col`}>
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="text-xs font-medium" style={{ color: msg.color }}>
-                                  {msg.userName}
-                                </span>
-                                <span className="text-[10px] text-slate-500">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-baseline gap-2">
+                                <span className="font-semibold text-slate-200 text-sm">{msg.userName}</span>
+                                <span className="text-xs text-slate-500">
                                   {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </span>
                               </div>
-                              <div
-                                className={`px-3 py-2 rounded-lg max-w-md ${msg.userId === currentUserId
-                                  ? 'bg-emerald-600/20 border border-emerald-500/30'
-                                  : 'bg-slate-800/60 border border-slate-700/50'
-                                  }`}
-                              >
-                                <p className="text-sm text-slate-200 break-words">{msg.message}</p>
-                              </div>
+                              <p className="text-sm text-slate-300 mt-0.5 break-words">{msg.message}</p>
                             </div>
                           </div>
-                        ))
-                      )}
-                      <div ref={chatEndRef} />
-                    </div>
-                    <div className="border-t border-slate-700/60 p-3 bg-slate-900/80">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={chatInput}
-                          onChange={(e) => setChatInput(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                          placeholder="Type a message..."
-                          className="flex-1 px-3 py-2 bg-slate-800/60 border border-slate-700/50 rounded-lg text-sm focus:outline-none focus:border-emerald-500/50 transition-all placeholder:text-slate-500"
-                        />
-                        <button
-                          onClick={handleSendMessage}
-                          disabled={!chatInput.trim()}
-                          className={`px-4 py-2 rounded-lg transition-all modern-button flex items-center gap-2 ${chatInput.trim()
-                            ? 'primary-button text-white'
-                            : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
-                            }`}
-                        >
-                          <Send className="w-4 h-4" />
-                        </button>
+                        ))}
+                        <div ref={chatEndRef} />
+                      </div>
+
+                      <div className="p-3 sm:p-4 border-t border-slate-700/60 bg-slate-900/50">
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                            placeholder="Type a message..."
+                            className="flex-1 bg-slate-800/60 border border-slate-600 rounded-lg px-3 sm:px-4 py-2 text-sm focus:outline-none focus:border-blue-500/50 transition-all"
+                          />
+                          <button
+                            onClick={handleSendMessage}
+                            disabled={!chatInput.trim()}
+                            className="px-3 sm:px-4 py-2 primary-button rounded-lg transition-all modern-button disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                          >
+                            <Send className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
       </div>
 
-      {/* Modals */}
+      {/* Users Modal */}
       <AnimatePresence>
         {showUsersModal && (
-          <UsersModal
-            users={connectedUsers.length > 0 ? connectedUsers : users}
-            isOwner={isOwner}
-            onClose={() => setShowUsersModal(false)}
-            onKickUser={handleKickUser}
-            onMakeAdmin={handleMakeAdmin}
-          />
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowUsersModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass-strong rounded-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-2xl"
+            >
+              <div className="p-4 sm:p-6 border-b border-slate-700/60">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl sm:text-2xl font-bold text-slate-100 flex items-center gap-3">
+                    <Users className="w-6 h-6 text-emerald-500" />
+                    Connected Users
+                  </h2>
+                  <button
+                    onClick={() => setShowUsersModal(false)}
+                    className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto max-h-[60vh] p-4 sm:p-6">
+                <div className="space-y-3">
+                  {connectedUsers.map((user) => (
+                    <div
+                      key={user.userId}
+                      className="flex items-center justify-between p-3 sm:p-4 glass rounded-lg hover:bg-slate-700/30 transition-all"
+                    >
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div
+                          className="w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center text-base sm:text-lg font-semibold text-white flex-shrink-0"
+                          style={{ backgroundColor: user.color }}
+                        >
+                          {user.userName.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-semibold text-slate-200 truncate text-sm sm:text-base">{user.userName}</h3>
+                            {user.role === 'owner' && <Crown className="w-4 h-4 text-yellow-500 flex-shrink-0" />}
+                            {user.role === 'admin' && <Shield className="w-4 h-4 text-blue-500 flex-shrink-0" />}
+                          </div>
+                          <p className="text-xs sm:text-sm text-slate-500 capitalize">{user.role}</p>
+                        </div>
+                      </div>
+
+                      {isOwner && user.userId !== currentUserId && (
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {user.role !== 'admin' && user.role !== 'owner' && (
+                            <button
+                              onClick={() => handleMakeAdmin(user.userId)}
+                              className="p-2 hover:bg-blue-500/10 text-blue-400 rounded-lg transition-all modern-button"
+                              title="Make Admin"
+                            >
+                              <UserPlus className="w-4 h-4" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleKickUser(user.userId)}
+                            className="p-2 hover:bg-red-500/10 text-red-400 rounded-lg transition-all modern-button"
+                            title="Kick User"
+                          >
+                            <UserX className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
+      {/* Settings Panel */}
       <AnimatePresence>
         {showSettingsPanel && (
-          <SettingsPanel
-            roomType={roomType}
-            roomName={roomName}
-            roomCode={roomCode}
-            roomOwnerName={roomOwnerName}
-            setRoomName={setRoomName}
-            isOwner={isOwner}
-            users={users}
-            onClose={() => setShowSettingsPanel(false)}
-            onDeleteRoom={handleDeleteRoom}
-            copiedCode={copiedCode}
-            onCopyCode={handleCopyRoomCode}
-          />
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowSettingsPanel(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass-strong rounded-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-2xl"
+            >
+              <div className="p-4 sm:p-6 border-b border-slate-700/60">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl sm:text-2xl font-bold text-slate-100 flex items-center gap-3">
+                    <Settings className="w-6 h-6 text-emerald-500" />
+                    Room Settings
+                  </h2>
+                  <button
+                    onClick={() => setShowSettingsPanel(false)}
+                    className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto max-h-[60vh] p-4 sm:p-6 space-y-6">
+                {/* Room Info */}
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Room Information</h3>
+                  <div className="glass p-4 rounded-lg space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Room Name</label>
+                      <p className="text-sm font-medium text-slate-200">{roomName}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Owner</label>
+                      <p className="text-sm font-medium text-slate-200">{roomOwnerName || 'Unknown'}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Room Type</label>
+                      <p className="text-sm font-medium text-slate-200 capitalize">{roomType}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Room Code */}
+                {roomCode && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Room Code</h3>
+                    <div className="glass p-4 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={roomCode}
+                          readOnly
+                          className="flex-1 bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-2 text-sm font-mono"
+                        />
+                        <button
+                          onClick={handleCopyRoomCode}
+                          className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
+                          title="Copy Code"
+                        >
+                          {copiedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                        {isOwner && (
+                          <button
+                            onClick={() => setChangePasswordModal(true)}
+                            className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
+                            title="Change Password"
+                          >
+                            <Key className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Download Path (Mobile/Desktop App) */}
+                {isDownloadPathSupported && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Download Path</h3>
+                    <div className="glass p-4 rounded-lg">
+                      {isEditingDownloadPath ? (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            value={downloadPath}
+                            onChange={(e) => setDownloadPath(e.target.value)}
+                            placeholder="/path/to/downloads"
+                            className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-2 text-sm"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={async () => {
+                                const result = await saveDownloadPath(downloadPath);
+                                if (result.success) {
+                                  setIsEditingDownloadPath(false);
+                                } else {
+                                  alert('Failed to save download path');
+                                }
+                              }}
+                              className="px-3 py-1.5 primary-button rounded-lg text-sm modern-button"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setIsEditingDownloadPath(false)}
+                              className="px-3 py-1.5 bg-slate-700/50 rounded-lg text-sm modern-button"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-mono text-slate-300">{downloadPath || 'Not set'}</p>
+                          <button
+                            onClick={() => setIsEditingDownloadPath(true)}
+                            className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* GitHub Integration */}
+                {isGitHubEnabled && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                      <Github className="w-4 h-4" />
+                      GitHub Integration
+                    </h3>
+                    <div className="glass p-4 rounded-lg space-y-3">
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Repository</label>
+                        <p className="text-sm font-medium text-slate-200">{githubRepo}</p>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-emerald-400">
+                        <Check className="w-4 h-4" />
+                        <span>Connected</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Danger Zone */}
+                {isOwner && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-red-400 uppercase tracking-wider flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Danger Zone
+                    </h3>
+                    <div className="glass p-4 rounded-lg border-red-500/30">
+                      <button
+                        onClick={handleDeleteRoom}
+                        className="w-full px-4 py-2 danger-button rounded-lg text-sm font-medium modern-button"
+                      >
+                        Delete Room
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
+      {/* Create File Modal */}
       <AnimatePresence>
         {createFileModal.show && (
           <CreateFileModal
             onClose={() => setCreateFileModal({ show: false, parentPath: [] })}
             onCreate={handleCreateFile}
             parentPath={createFileModal.parentPath}
+            isCreating={isCreatingFile}
           />
         )}
       </AnimatePresence>
 
+      {/* Create Folder Modal */}
       <AnimatePresence>
         {createFolderModal.show && (
           <CreateFolderModal
             onClose={() => setCreateFolderModal({ show: false, parentPath: [] })}
             onCreate={handleCreateFolder}
             parentPath={createFolderModal.parentPath}
+            isCreating={isCreatingFolder}
           />
         )}
       </AnimatePresence>
 
+      {/* Rename Modal */}
       <AnimatePresence>
         {renameModal.show && (
           <RenameModal
             item={renameModal.item}
             onClose={() => setRenameModal({ show: false, item: null, path: [] })}
             onRename={handleRename}
+            isRenaming={isRenamingItem}
           />
         )}
       </AnimatePresence>
 
+      {/* Delete Modal */}
       <AnimatePresence>
         {deleteModal.show && (
           <DeleteModal
             item={deleteModal.item}
             onClose={() => setDeleteModal({ show: false, item: null, path: [] })}
             onDelete={handleDelete}
+            isDeleting={isDeletingItem}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Change Password Modal */}
+      <AnimatePresence>
+        {changePasswordModal && (
+          <ChangePasswordModal
+            onClose={() => setChangePasswordModal(false)}
+            onSave={handleChangePassword}
           />
         )}
       </AnimatePresence>
@@ -1939,86 +2832,59 @@ export default function CodeEditorPage() {
 }
 
 // File Tree Node Component
-function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, onDelete, onCreateFile, onCreateFolder, level = 0, canEdit }) {
-  const isActive = activeFile?.id === node.id;
-  const [showActions, setShowActions] = useState(false);
+function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, onDelete, onCreateFile, onCreateFolder, canEdit, openingFiles }) {
+  const [showContextMenu, setShowContextMenu] = useState(false);
+  const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 });
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenuPos({ x: e.clientX, y: e.clientY });
+    setShowContextMenu(true);
+  };
+
+  const isLoading = node.type === 'file' && openingFiles.has(node.id);
 
   if (node.type === 'folder') {
     return (
-      <div className="select-none">
+      <div>
         <div
-          className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all group ${node.isExpanded ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'
-            }`}
-          style={{ paddingLeft: `${level * 14 + 8}px` }}
-          onMouseEnter={() => setShowActions(true)}
-          onMouseLeave={() => setShowActions(false)}
+          className="flex items-center gap-2 px-2 py-1.5 hover:bg-slate-700/30 rounded-lg cursor-pointer transition-all group"
+          onClick={() => onToggle(path)}
+          onContextMenu={handleContextMenu}
         >
-          <button
-            onClick={() => onToggle(path)}
-            className="flex items-center gap-2 flex-1 min-w-0 text-left"
-          >
-            {node.isExpanded ? (
-              <ChevronDown className="w-4 h-4 text-slate-500 flex-shrink-0" />
-            ) : (
-              <ChevronRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
-            )}
-            <Folder className={`w-4 h-4 flex-shrink-0 ${node.isExpanded ? 'text-emerald-400' : 'text-slate-500'}`} />
-            <span className="text-sm font-medium truncate text-slate-300">{node.name}</span>
-          </button>
-
-          <AnimatePresence>
-            {showActions && canEdit && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                className="flex items-center gap-1 flex-shrink-0"
+          {node.isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-slate-500 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
+          )}
+          <Folder className={`w-4 h-4 flex-shrink-0 ${node.isExpanded ? 'text-emerald-500' : 'text-slate-500'}`} />
+          <span className="text-sm text-slate-300 truncate flex-1">{node.name}</span>
+          {canEdit && (
+            <div className="hidden group-hover:flex items-center gap-1 flex-shrink-0">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCreateFile(path);
+                }}
+                className="p-1 hover:bg-emerald-500/10 text-emerald-400 rounded transition-all"
+                title="New File"
               >
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onCreateFile([...path, node.children?.length || 0]);
-                  }}
-                  className="p-1 hover:bg-emerald-500/10 rounded transition-all modern-button text-emerald-400"
-                  title="New file in folder"
-                >
-                  <Plus className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onCreateFolder([...path, node.children?.length || 0]);
-                  }}
-                  className="p-1 hover:bg-slate-600/50 rounded transition-all modern-button text-slate-400"
-                  title="New folder in folder"
-                >
-                  <FolderPlus className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRename(node, path);
-                  }}
-                  className="p-1 hover:bg-slate-600/50 rounded transition-all modern-button text-slate-400"
-                  title="Rename"
-                >
-                  <Edit2 className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(node, path);
-                  }}
-                  className="p-1 hover:bg-red-500/10 rounded transition-all modern-button text-red-400"
-                  title="Delete"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
+                <Plus className="w-3 h-3" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCreateFolder(path);
+                }}
+                className="p-1 hover:bg-slate-600/30 text-slate-400 rounded transition-all"
+                title="New Folder"
+              >
+                <FolderPlus className="w-3 h-3" />
+              </button>
+            </div>
+          )}
         </div>
-
         <AnimatePresence>
           {node.isExpanded && (
             <motion.div
@@ -2026,12 +2892,13 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.2 }}
+              className="ml-4 border-l border-slate-700/40 pl-2 overflow-hidden"
             >
-              {node.children?.map((child, idx) => (
+              {node.children?.map((child, i) => (
                 <FileTreeNode
-                  key={child.name}
+                  key={child.id || `${child.name}-${i}`}
                   node={child}
-                  path={[...path, idx]}
+                  path={[...path, i]}
                   onToggle={onToggle}
                   onOpenFile={onOpenFile}
                   activeFile={activeFile}
@@ -2039,45 +2906,53 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
                   onDelete={onDelete}
                   onCreateFile={onCreateFile}
                   onCreateFolder={onCreateFolder}
-                  level={level + 1}
                   canEdit={canEdit}
+                  openingFiles={openingFiles}
                 />
               ))}
             </motion.div>
           )}
         </AnimatePresence>
+
+        {showContextMenu && canEdit && (
+          <ContextMenu
+            x={contextMenuPos.x}
+            y={contextMenuPos.y}
+            onClose={() => setShowContextMenu(false)}
+            items={[
+              { label: 'New File', icon: Plus, onClick: () => onCreateFile(path) },
+              { label: 'New Folder', icon: FolderPlus, onClick: () => onCreateFolder(path) },
+              { label: 'Rename', icon: Edit2, onClick: () => onRename(node, path) },
+              { label: 'Delete', icon: Trash2, onClick: () => onDelete(node, path), danger: true },
+            ]}
+          />
+        )}
       </div>
     );
   }
 
   return (
-    <div
-      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all group ${isActive ? 'bg-emerald-600/20 border-l-2 border-emerald-500 text-slate-100' : 'hover:bg-slate-700/20 text-slate-300'
-        }`}
-      style={{ paddingLeft: `${level * 14 + 8}px` }}
-      onClick={(e) => onOpenFile(node, e.ctrlKey || e.metaKey)}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
-    >
-      {getFileIcon(node.name)}
-      <span className={`text-sm flex-1 truncate ${isActive ? 'font-semibold' : 'font-medium'}`}>
-        {node.name}
-      </span>
-
-      <AnimatePresence>
-        {showActions && canEdit && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.8 }}
-            className="flex items-center gap-1 flex-shrink-0"
-          >
+    <div>
+      <div
+        className={`flex items-center gap-2 px-2 py-1.5 hover:bg-slate-700/30 rounded-lg cursor-pointer transition-all group ${activeFile?.id === node.id ? 'bg-emerald-500/10 text-emerald-400' : ''
+          }`}
+        onClick={() => onOpenFile(node)}
+        onContextMenu={handleContextMenu}
+      >
+        {isLoading ? (
+          <Loader2 className="w-4 h-4 animate-spin text-emerald-500 flex-shrink-0" />
+        ) : (
+          getFileIcon(node.name)
+        )}
+        <span className="text-sm truncate flex-1">{node.name}</span>
+        {canEdit && (
+          <div className="hidden group-hover:flex items-center gap-1 flex-shrink-0">
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onRename(node, path);
               }}
-              className="p-1 hover:bg-slate-600/50 rounded transition-all modern-button text-slate-400"
+              className="p-1 hover:bg-slate-600/30 text-slate-400 rounded transition-all"
               title="Rename"
             >
               <Edit2 className="w-3 h-3" />
@@ -2087,235 +2962,68 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
                 e.stopPropagation();
                 onDelete(node, path);
               }}
-              className="p-1 hover:bg-red-500/10 rounded transition-all modern-button text-red-400"
+              className="p-1 hover:bg-red-500/10 text-red-400 rounded transition-all"
               title="Delete"
             >
               <Trash2 className="w-3 h-3" />
             </button>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
+      </div>
+
+      {showContextMenu && canEdit && (
+        <ContextMenu
+          x={contextMenuPos.x}
+          y={contextMenuPos.y}
+          onClose={() => setShowContextMenu(false)}
+          items={[
+            { label: 'Rename', icon: Edit2, onClick: () => onRename(node, path) },
+            { label: 'Delete', icon: Trash2, onClick: () => onDelete(node, path), danger: true },
+          ]}
+        />
+      )}
     </div>
   );
 }
 
-// Modal Components
-function UsersModal({ users, isOwner, onClose, onKickUser, onMakeAdmin }) {
+// Context Menu Component
+function ContextMenu({ x, y, onClose, items }) {
+  useEffect(() => {
+    const handleClick = () => onClose();
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [onClose]);
+
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      style={{ left: x, top: y }}
+      className="fixed glass-strong rounded-lg shadow-2xl border border-slate-600/50 py-1 z-50 min-w-[180px]"
     >
-      <motion.div
-        initial={{ scale: 0.95, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.95, opacity: 0, y: 20 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        className="glass-strong rounded-xl p-4 sm:p-6 max-w-md w-full border border-slate-700/60 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold flex items-center gap-2 text-slate-200">
-            <Users className="w-5 h-5 text-emerald-400" />
-            Room Users ({users.length})
-          </h3>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button text-slate-400"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="space-y-2 sm:space-y-3 max-h-96 overflow-y-auto">
-          {users.map((user) => (
-            <div
-              key={user.userId || user.id}
-              className={`p-3 sm:p-4 rounded-lg transition-all border ${user.online !== false
-                ? 'bg-slate-800/40 border-slate-700/50'
-                : 'bg-slate-800/20 border-slate-700/30 opacity-60'
-                }`}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-lg flex-shrink-0 ring-2 ring-slate-700"
-                  style={{ backgroundColor: user.color || '#3B82F6' }}
-                >
-                  {(user.userName || user.name)?.charAt(0).toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-medium text-sm truncate text-slate-200">
-                      {user.userName || user.name}
-                    </p>
-                    {user.role === 'owner' && (
-                      <Crown className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                    )}
-                    {user.role === 'admin' && (
-                      <Shield className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    )}
-                  </div>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mt-0.5">
-                    {user.role}
-                  </p>
-                </div>
-                {user.online !== false && (
-                  <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full flex-shrink-0 pulse-animation"></div>
-                )}
-              </div>
-
-              {isOwner && user.role !== 'owner' && user.online !== false && (
-                <div className="flex gap-2 mt-3">
-                  <button
-                    onClick={() => onKickUser(user.userId || user.id)}
-                    className="flex-1 px-3 py-2 danger-button text-white rounded-lg transition-all modern-button text-xs font-semibold flex items-center justify-center gap-2"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    Kick
-                  </button>
-                  {user.role !== 'admin' && (
-                    <button
-                      onClick={() => onMakeAdmin(user.userId || user.id)}
-                      className="flex-1 px-3 py-2 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded-lg transition-all modern-button text-xs font-semibold flex items-center justify-center gap-2 border border-slate-600/50"
-                    >
-                      <Shield className="w-3.5 h-3.5" />
-                      Make Admin
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </motion.div>
+      {items.map((item, i) => (
+        <button
+          key={i}
+          onClick={() => {
+            item.onClick();
+            onClose();
+          }}
+          className={`w-full flex items-center gap-3 px-4 py-2 text-sm hover:bg-slate-700/50 transition-colors text-left ${item.danger ? 'text-red-400' : 'text-slate-200'
+            }`}
+        >
+          <item.icon className="w-4 h-4" />
+          <span>{item.label}</span>
+        </button>
+      ))}
     </motion.div>
   );
 }
 
-function SettingsPanel({ roomType, roomName, roomCode, roomOwnerName, setRoomName, isOwner, users, onClose, onDeleteRoom, copiedCode, onCopyCode }) {
-  return (
-    <>
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
-        onClick={onClose}
-      />
-      <motion.div
-        initial={{ x: 400, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        exit={{ x: 400, opacity: 0 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-        className="fixed right-0 top-0 h-full w-full md:w-96 glass-strong border-l border-slate-700/60 z-50 p-4 sm:p-6 overflow-y-auto shadow-2xl"
-      >
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="text-base font-semibold flex items-center gap-2 text-slate-200">
-            <Settings className="w-5 h-5 text-emerald-400" />
-            Settings
-          </h3>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button text-slate-400"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Code</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={roomCode || 'Loading...'}
-                readOnly
-                className="flex-1 px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-mono opacity-90"
-              />
-              <button
-                onClick={onCopyCode}
-                className={`px-4 py-2.5 rounded-lg transition-all modern-button flex items-center gap-2 ${copiedCode ? 'bg-emerald-600 text-white' : 'bg-slate-700/50 hover:bg-slate-600/50 text-slate-300'
-                  }`}
-              >
-                {copiedCode ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Type</label>
-            <div className={`px-3 py-2.5 rounded-lg text-sm font-medium border ${roomType === 'temporary'
-              ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
-              : roomType === 'permanent'
-                ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
-                : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-              }`}>
-              {roomType === 'temporary' ? '⏱️ Temporary' : roomType === 'permanent' ? '👥 Collaborative' : '👤 Solo'}
-            </div>
-          </div>
-
-          {roomOwnerName && (
-            <div>
-              <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Owner</label>
-              <div className="px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-medium text-slate-300">
-                {roomOwnerName}
-              </div>
-            </div>
-          )}
-
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Room Name</label>
-            <input
-              type="text"
-              value={roomName}
-              onChange={(e) => setRoomName(e.target.value)}
-              disabled={!isOwner}
-              className={`w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-medium focus:outline-none focus:border-emerald-500/50 transition-all ${!isOwner ? 'opacity-60 cursor-not-allowed' : ''
-                }`}
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1.5 block uppercase tracking-wider">Active Users</label>
-            <div className="space-y-2">
-              {users.filter(u => u.online).map((user) => (
-                <div key={user.id} className="flex items-center gap-2 px-3 py-2 bg-slate-800/40 rounded-lg border border-slate-700/50">
-                  <span className="text-lg">{user.avatar}</span>
-                  <span className="text-sm font-medium text-slate-300">{user.name}</span>
-                  <div className="flex-1"></div>
-                  <div className="w-2 h-2 bg-emerald-500 rounded-full pulse-animation"></div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {isOwner && roomType !== 'temporary' && (
-            <div className="pt-4 border-t border-slate-700/60">
-              <label className="text-xs font-semibold text-red-400 mb-2 block uppercase tracking-wider flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" />
-                Danger Zone
-              </label>
-              <button
-                onClick={onDeleteRoom}
-                className="w-full px-4 py-3 danger-button text-white rounded-lg transition-all modern-button flex items-center justify-center gap-2 font-semibold"
-              >
-                <Trash2 className="w-4 h-4" />
-                Delete Room
-              </button>
-            </div>
-          )}
-        </div>
-      </motion.div>
-    </>
-  );
-}
-
-function CreateFileModal({ onClose, onCreate, parentPath }) {
+// Create File Modal
+function CreateFileModal({ onClose, onCreate, parentPath, isCreating }) {
   const [fileName, setFileName] = useState('');
-  const [extension, setExtension] = useState('js');
+  const [extension, setExtension] = useState('txt');
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -2333,73 +3041,71 @@ function CreateFileModal({ onClose, onCreate, parentPath }) {
       onClick={onClose}
     >
       <motion.div
-        initial={{ scale: 0.95, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.95, opacity: 0, y: 20 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        className="glass-strong rounded-xl p-6 max-w-md w-full border border-slate-700/60 shadow-2xl"
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
+        className="glass-strong rounded-2xl p-6 max-w-md w-full shadow-2xl"
       >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-200">Create New File</h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button">
-            <X className="w-4 h-4 text-slate-400" />
-          </button>
-        </div>
-
+        <h2 className="text-xl font-bold text-slate-100 mb-4">Create New File</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-slate-400 mb-2 block uppercase tracking-wider">File Name</label>
+            <label className="text-sm text-slate-400 block mb-2">File Name</label>
             <input
               type="text"
               value={fileName}
               onChange={(e) => setFileName(e.target.value)}
-              placeholder="example"
-              className="w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-medium focus:outline-none focus:border-emerald-500/50 transition-all"
+              placeholder="Enter file name"
+              className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500/50 transition-all"
               autoFocus
+              disabled={isCreating}
             />
           </div>
-
           <div>
-            <label className="text-xs font-semibold text-slate-400 mb-2 block uppercase tracking-wider">Extension</label>
+            <label className="text-sm text-slate-400 block mb-2">Extension</label>
             <select
               value={extension}
               onChange={(e) => setExtension(e.target.value)}
-              className="w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-medium focus:outline-none focus:border-emerald-500/50 transition-all"
+              className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500/50 transition-all"
+              disabled={isCreating}
             >
-              <option value="js">JavaScript (.js)</option>
-              <option value="jsx">React (.jsx)</option>
-              <option value="ts">TypeScript (.ts)</option>
-              <option value="tsx">React TypeScript (.tsx)</option>
-              <option value="py">Python (.py)</option>
-              <option value="java">Java (.java)</option>
-              <option value="cpp">C++ (.cpp)</option>
-              <option value="c">C (.c)</option>
-              <option value="html">HTML (.html)</option>
-              <option value="css">CSS (.css)</option>
-              <option value="json">JSON (.json)</option>
-              <option value="md">Markdown (.md)</option>
-              <option value="txt">Text (.txt)</option>
+              <option value="txt">txt</option>
+              <option value="js">js</option>
+              <option value="jsx">jsx</option>
+              <option value="ts">ts</option>
+              <option value="tsx">tsx</option>
+              <option value="py">py</option>
+              <option value="java">java</option>
+              <option value="cpp">cpp</option>
+              <option value="c">c</option>
+              <option value="html">html</option>
+              <option value="css">css</option>
+              <option value="json">json</option>
+              <option value="md">md</option>
             </select>
           </div>
-
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={!fileName.trim() || isCreating}
+              className="flex-1 px-4 py-2 primary-button rounded-lg text-sm font-medium modern-button disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isCreating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create'
+              )}
+            </button>
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 px-4 py-2.5 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded-lg transition-all modern-button font-semibold"
+              disabled={isCreating}
+              className="px-4 py-2 bg-slate-700/50 rounded-lg text-sm font-medium modern-button disabled:opacity-50"
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!fileName.trim()}
-              className={`flex-1 px-4 py-2.5 rounded-lg transition-all modern-button font-semibold ${fileName.trim()
-                ? 'primary-button text-white'
-                : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
-                }`}
-            >
-              Create
             </button>
           </div>
         </form>
@@ -2408,7 +3114,8 @@ function CreateFileModal({ onClose, onCreate, parentPath }) {
   );
 }
 
-function CreateFolderModal({ onClose, onCreate, parentPath }) {
+// Create Folder Modal
+function CreateFolderModal({ onClose, onCreate, parentPath, isCreating }) {
   const [folderName, setFolderName] = useState('');
 
   const handleSubmit = (e) => {
@@ -2427,50 +3134,48 @@ function CreateFolderModal({ onClose, onCreate, parentPath }) {
       onClick={onClose}
     >
       <motion.div
-        initial={{ scale: 0.95, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.95, opacity: 0, y: 20 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        className="glass-strong rounded-xl p-6 max-w-md w-full border border-slate-700/60 shadow-2xl"
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
+        className="glass-strong rounded-2xl p-6 max-w-md w-full shadow-2xl"
       >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-200">Create New Folder</h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button">
-            <X className="w-4 h-4 text-slate-400" />
-          </button>
-        </div>
-
+        <h2 className="text-xl font-bold text-slate-100 mb-4">Create New Folder</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-slate-400 mb-2 block uppercase tracking-wider">Folder Name</label>
+            <label className="text-sm text-slate-400 block mb-2">Folder Name</label>
             <input
               type="text"
               value={folderName}
               onChange={(e) => setFolderName(e.target.value)}
-              placeholder="components"
-              className="w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-medium focus:outline-none focus:border-emerald-500/50 transition-all"
+              placeholder="Enter folder name"
+              className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500/50 transition-all"
               autoFocus
+              disabled={isCreating}
             />
           </div>
-
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={!folderName.trim() || isCreating}
+              className="flex-1 px-4 py-2 primary-button rounded-lg text-sm font-medium modern-button disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isCreating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create'
+              )}
+            </button>
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 px-4 py-2.5 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded-lg transition-all modern-button font-semibold"
+              disabled={isCreating}
+              className="px-4 py-2 bg-slate-700/50 rounded-lg text-sm font-medium modern-button disabled:opacity-50"
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!folderName.trim()}
-              className={`flex-1 px-4 py-2.5 rounded-lg transition-all modern-button font-semibold ${folderName.trim()
-                ? 'primary-button text-white'
-                : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
-                }`}
-            >
-              Create
             </button>
           </div>
         </form>
@@ -2479,12 +3184,13 @@ function CreateFolderModal({ onClose, onCreate, parentPath }) {
   );
 }
 
-function RenameModal({ item, onClose, onRename }) {
+// Rename Modal
+function RenameModal({ item, onClose, onRename, isRenaming }) {
   const [newName, setNewName] = useState(item?.name || '');
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (newName.trim()) {
+    if (newName.trim() && newName !== item.name) {
       onRename(newName.trim());
     }
   };
@@ -2498,51 +3204,47 @@ function RenameModal({ item, onClose, onRename }) {
       onClick={onClose}
     >
       <motion.div
-        initial={{ scale: 0.95, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.95, opacity: 0, y: 20 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        className="glass-strong rounded-xl p-6 max-w-md w-full border border-slate-700/60 shadow-2xl"
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
+        className="glass-strong rounded-2xl p-6 max-w-md w-full shadow-2xl"
       >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-200">
-            Rename {item?.type === 'folder' ? 'Folder' : 'File'}
-          </h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button">
-            <X className="w-4 h-4 text-slate-400" />
-          </button>
-        </div>
-
+        <h2 className="text-xl font-bold text-slate-100 mb-4">Rename {item?.type === 'folder' ? 'Folder' : 'File'}</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-slate-400 mb-2 block uppercase tracking-wider">New Name</label>
+            <label className="text-sm text-slate-400 block mb-2">New Name</label>
             <input
               type="text"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              className="w-full px-3 py-2.5 bg-slate-800/50 border border-slate-600/50 rounded-lg text-sm font-medium focus:outline-none focus:border-emerald-500/50 transition-all"
+              className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500/50 transition-all"
               autoFocus
+              disabled={isRenaming}
             />
           </div>
-
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={!newName.trim() || newName === item?.name || isRenaming}
+              className="flex-1 px-4 py-2 primary-button rounded-lg text-sm font-medium modern-button disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isRenaming ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Renaming...
+                </>
+              ) : (
+                'Rename'
+              )}
+            </button>
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 px-4 py-2.5 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded-lg transition-all modern-button font-semibold"
+              disabled={isRenaming}
+              className="px-4 py-2 bg-slate-700/50 rounded-lg text-sm font-medium modern-button disabled:opacity-50"
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!newName.trim()}
-              className={`flex-1 px-4 py-2.5 rounded-lg transition-all modern-button font-semibold ${newName.trim()
-                ? 'primary-button text-white'
-                : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
-                }`}
-            >
-              Rename
             </button>
           </div>
         </form>
@@ -2551,7 +3253,8 @@ function RenameModal({ item, onClose, onRename }) {
   );
 }
 
-function DeleteModal({ item, onClose, onDelete }) {
+// Delete Modal
+function DeleteModal({ item, onClose, onDelete, isDeleting }) {
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -2561,46 +3264,106 @@ function DeleteModal({ item, onClose, onDelete }) {
       onClick={onClose}
     >
       <motion.div
-        initial={{ scale: 0.95, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.95, opacity: 0, y: 20 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        className="glass-strong rounded-xl p-6 max-w-md w-full border border-slate-700/60 shadow-2xl"
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
+        className="glass-strong rounded-2xl p-6 max-w-md w-full shadow-2xl"
       >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-red-400 flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5" />
-            Delete {item?.type === 'folder' ? 'Folder' : 'File'}
-          </h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button">
-            <X className="w-4 h-4 text-slate-400" />
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center">
+            <AlertTriangle className="w-6 h-6 text-red-500" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-100">Delete {item?.type === 'folder' ? 'Folder' : 'File'}?</h2>
+        </div>
+        <p className="text-sm text-slate-400 mb-6">
+          Are you sure you want to delete <span className="font-semibold text-slate-200">"{item?.name}"</span>? This action cannot be undone.
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={onDelete}
+            disabled={isDeleting}
+            className="flex-1 px-4 py-2 danger-button rounded-lg text-sm font-medium modern-button disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {isDeleting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Deleting...
+              </>
+            ) : (
+              'Delete'
+            )}
           </button>
-        </div>
-
-        <div className="mb-6">
-          <p className="text-sm text-slate-300 mb-2">
-            Are you sure you want to delete <span className="font-semibold text-white">{item?.name}</span>?
-          </p>
-          <p className="text-xs text-slate-500">
-            This action cannot be undone.
-          </p>
-        </div>
-
-        <div className="flex gap-2">
           <button
             onClick={onClose}
-            className="flex-1 px-4 py-2.5 bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 rounded-lg transition-all modern-button font-semibold"
+            disabled={isDeleting}
+            className="px-4 py-2 bg-slate-700/50 rounded-lg text-sm font-medium modern-button disabled:opacity-50"
           >
             Cancel
           </button>
-          <button
-            onClick={onDelete}
-            className="flex-1 px-4 py-2.5 danger-button text-white rounded-lg transition-all modern-button font-semibold"
-          >
-            Delete
-          </button>
         </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// Change Password Modal
+function ChangePasswordModal({ onClose, onSave }) {
+  const [newPassword, setNewPassword] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (newPassword.trim()) {
+      onSave(newPassword.trim());
+      onClose();
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        onClick={(e) => e.stopPropagation()}
+        className="glass-strong rounded-2xl p-6 max-w-md w-full shadow-2xl"
+      >
+        <h2 className="text-xl font-bold text-slate-100 mb-4">Change Room Password</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="text-sm text-slate-400 block mb-2">New Password</label>
+            <input
+              type="text"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Enter new password"
+              className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500/50 transition-all"
+              autoFocus
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={!newPassword.trim()}
+              className="flex-1 px-4 py-2 primary-button rounded-lg text-sm font-medium modern-button disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Change Password
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 bg-slate-700/50 rounded-lg text-sm font-medium modern-button"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       </motion.div>
     </motion.div>
   );
