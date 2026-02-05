@@ -360,6 +360,8 @@ export function buildFileTree(files) {
                 name: fileName,
                 type: "file",
                 fullPath: file.storagePath,
+                folderPath: file.folderPath || "",
+                repoPath: (file.folderPath ? `${file.folderPath}/${fileName}` : fileName),
                 content: null,
             });
         } catch (err) {
