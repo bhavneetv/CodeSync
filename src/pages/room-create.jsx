@@ -5,7 +5,7 @@ import Navbar from '../Components/navbar.jsx';
 import { isLoggin } from '../function/login/isLoggin.js';
 import { createRoom } from '../function/rooms/room-main.js';
 import supabase from '../supabaseClient.js';
-import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe, FileCode, FolderGit2 } from 'lucide-react';
+import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe, FileCode, FolderGit2, Clock, User, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
 import { loginWithGithub } from '../function/login/auth';
@@ -22,6 +22,21 @@ const RoomCreate = () => {
 
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState(null);
+
+  // Recent Rooms - NEW: Separate state for joined and created
+  const [recentJoinedRooms, setRecentJoinedRooms] = useState([]);
+  const [recentCreatedRooms, setRecentCreatedRooms] = useState([]);
+  const [loadingRecent, setLoadingRecent] = useState(false);
+  const [roomViewMode, setRoomViewMode] = useState('joined'); // 'joined' or 'created'
+
+  // Password Modal for Recent Rooms
+  const [passwordModal, setPasswordModal] = useState({
+    show: false,
+    roomId: null,
+    roomName: '',
+    password: ''
+  });
 
   // GitHub State
   const [repos, setRepos] = useState([]);
@@ -33,10 +48,151 @@ const RoomCreate = () => {
   // Check Login Status
   useEffect(() => {
     (async () => {
-      const loggedIn = await isLoggin();
-      if (loggedIn) setIsLoggedIn(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session?.user) {
+        setIsLoggedIn(true);
+        setCurrentUserId(session.user.id);
+        fetchRecentRooms(session.user.id);
+      } else {
+        setIsLoggedIn(false);
+        setCurrentUserId(null);
+      }
     })();
   }, []);
+
+  // Fetch Recent Rooms - UPDATED to fetch both joined and created
+  const fetchRecentRooms = async (userId) => {
+    setLoadingRecent(true);
+    try {
+      // === FETCH RECENTLY JOINED ROOMS ===
+      const { data: memberData, error: memberError } = await supabase
+        .from('room_members')
+        .select('room_id, joined_at')
+        .eq('user_id', userId)
+        .neq('room_id', userId) // Exclude rooms they own (to avoid duplicates)
+        .order('joined_at', { ascending: false })
+        .limit(3);
+
+      if (!memberError && memberData && memberData.length > 0) {
+        const roomIds = memberData.map(m => m.room_id);
+        const { data: roomsData, error: roomsError } = await supabase
+          .from('rooms')
+          .select('id, room_name, owner_id, has_password')
+          .in('id', roomIds);
+
+        if (!roomsError && roomsData) {
+          const ownerIds = [...new Set(roomsData.map(r => r.owner_id))];
+          const { data: profilesData } = await supabase
+            .from('profiles')
+            .select('id, name')
+            .in('id', ownerIds);
+
+          const joinedRooms = memberData.map(member => {
+            const room = roomsData.find(r => r.id === member.room_id);
+            const owner = profilesData?.find(p => p.id === room?.owner_id);
+
+            return {
+              roomId: member.room_id,
+              roomName: room?.room_name || 'Unnamed Room',
+              joinedAt: member.joined_at,
+              ownerName: owner?.name || 'Unknown',
+              hasPassword: room?.has_password || false
+            };
+          });
+
+          setRecentJoinedRooms(joinedRooms);
+        }
+      }
+
+      // === FETCH RECENTLY CREATED ROOMS ===
+      const { data: createdRoomsData, error: createdError } = await supabase
+        .from('rooms')
+        .select('id, room_name, created_at, has_password')
+        .eq('owner_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (!createdError && createdRoomsData) {
+        const createdRooms = createdRoomsData.map(room => ({
+          roomId: room.id,
+          roomName: room.room_name || 'Unnamed Room',
+          joinedAt: room.created_at, // Using created_at as the timestamp
+          ownerName: 'You',
+          hasPassword: room.has_password || false
+        }));
+
+        setRecentCreatedRooms(createdRooms);
+      }
+
+    } catch (error) {
+      console.error('Error fetching recent rooms:', error);
+      setRecentJoinedRooms([]);
+      setRecentCreatedRooms([]);
+    } finally {
+      setLoadingRecent(false);
+    }
+  };
+
+  // Handle Recent Room Join
+  const handleRecentRoomJoin = async (roomId, hasPassword) => {
+    if (hasPassword) {
+      setPasswordModal({
+        show: true,
+        roomId: roomId,
+        roomName: getCurrentRooms().find(r => r.roomId === roomId)?.roomName || '',
+        password: ''
+      });
+    } else {
+      // Join directly
+      const res = await handleRoomJoin(roomId, null, false);
+      if (res.status === "joined") {
+        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+      } else {
+        alert("Failed to join room.");
+      }
+    }
+  };
+
+  // Submit Password for Recent Room
+  const handlePasswordModalSubmit = async () => {
+    setLoading(true);
+    const res = await handleRoomJoin(
+      passwordModal.roomId,
+      passwordModal.password,
+      true
+    );
+
+    if (res.status === "wrong_password") {
+      alert("Incorrect password.");
+      setLoading(false);
+    } else if (res.status === "joined") {
+      window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+    } else {
+      alert("Failed to join room.");
+      setLoading(false);
+    }
+  };
+
+  // Get current rooms based on mode
+  const getCurrentRooms = () => {
+    return roomViewMode === 'joined' ? recentJoinedRooms : recentCreatedRooms;
+  };
+
+  // Format Date
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
+  };
 
   // --- GitHub Logic ---
   const handleGithubView = async () => {
@@ -229,6 +385,8 @@ const RoomCreate = () => {
     large: { scale: 0.77, width: '100%', maxWidth: '600px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } }
   };
 
+  const currentRooms = getCurrentRooms();
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-slate-950 to-gray-950 text-white font-sans">
       <Navbar path={window.location.pathname} />
@@ -269,6 +427,126 @@ const RoomCreate = () => {
                       </motion.button>
                     </div>
                   </div>
+
+                  {/* === RECENT ROOMS SECTION WITH TOGGLE === */}
+                  {isLoggedIn && (recentJoinedRooms.length > 0 || recentCreatedRooms.length > 0) && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }} 
+                      animate={{ opacity: 1, y: 0 }} 
+                      transition={{ delay: 0.2 }}
+                      className="mt-8 sm:mt-10"
+                    >
+                      <div className="flex items-center justify-between mb-3 sm:mb-4">
+                        <h3 className="text-sm sm:text-base font-semibold text-gray-300 flex items-center gap-2">
+                          <Clock className="w-4 h-4 sm:w-5 sm:h-5" />
+                          Recent Rooms
+                        </h3>
+                      </div>
+
+                      {/* SLIDING TOGGLE BUTTON */}
+                      <div className="mb-4 flex justify-center">
+                        <div className="relative inline-flex bg-white/5 rounded-lg p-1 border border-white/10">
+                          {/* Sliding Background */}
+                          <motion.div
+                            className="absolute top-1 bottom-1 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-md"
+                            initial={false}
+                            animate={{
+                              left: roomViewMode === 'joined' ? '4px' : '50%',
+                              right: roomViewMode === 'joined' ? '50%' : '4px',
+                            }}
+                            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                          />
+                          
+                          {/* Buttons */}
+                          <button
+                            onClick={() => setRoomViewMode('joined')}
+                            className={`relative z-10 px-4 sm:px-6 py-2 text-xs sm:text-sm font-medium transition-colors rounded-md ${
+                              roomViewMode === 'joined' ? 'text-white' : 'text-gray-400'
+                            }`}
+                          >
+                            Joined
+                          </button>
+                          <button
+                            onClick={() => setRoomViewMode('created')}
+                            className={`relative z-10 px-4 sm:px-6 py-2 text-xs sm:text-sm font-medium transition-colors rounded-md ${
+                              roomViewMode === 'created' ? 'text-white' : 'text-gray-400'
+                            }`}
+                          >
+                            Created
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* ROOMS LIST */}
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={roomViewMode}
+                          initial={{ opacity: 0, x: roomViewMode === 'joined' ? -20 : 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: roomViewMode === 'joined' ? 20 : -20 }}
+                          transition={{ duration: 0.2 }}
+                          className="space-y-2"
+                        >
+                          {currentRooms.length > 0 ? (
+                            currentRooms.map((room, idx) => (
+                              <motion.div
+                                key={room.roomId}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: idx * 0.05 }}
+                                className="flex flex-col sm:flex-row sm:items-center justify-between p-3 sm:p-4 bg-white/5 hover:bg-white/10 rounded-lg sm:rounded-xl border border-white/10 transition-all group"
+                              >
+                                <div className="flex-1 mb-2 sm:mb-0 min-w-0">
+                                  <h4 className="font-semibold text-sm sm:text-base text-white truncate">
+                                    {room.roomName}
+                                  </h4>
+                                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 mt-1">
+                                    <span className="flex items-center gap-1">
+                                      <User className="w-3 h-3" />
+                                      {room.ownerName}
+                                    </span>
+                                    <span>•</span>
+                                    <span className="flex items-center gap-1">
+                                      <Clock className="w-3 h-3" />
+                                      {formatDate(room.joinedAt)}
+                                    </span>
+                                    {room.hasPassword && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="flex items-center gap-1">
+                                          <Lock className="w-3 h-3" />
+                                          Protected
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <motion.button
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
+                                  onClick={() => handleRecentRoomJoin(room.roomId, room.hasPassword)}
+                                  className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg text-xs sm:text-sm font-medium shadow-md transition-all flex items-center justify-center gap-1.5"
+                                >
+                                  <span>Join</span>
+                                  <ArrowRight className="w-3 h-3 sm:w-4 sm:h-4" />
+                                </motion.button>
+                              </motion.div>
+                            ))
+                          ) : (
+                            <div className="text-center py-6 text-gray-500 text-sm">
+                              No {roomViewMode === 'joined' ? 'joined' : 'created'} rooms yet
+                            </div>
+                          )}
+                        </motion.div>
+                      </AnimatePresence>
+                    </motion.div>
+                  )}
+
+                  {isLoggedIn && loadingRecent && (
+                    <div className="mt-8 text-center">
+                      <Loader2 className="w-5 h-5 animate-spin mx-auto text-gray-500" />
+                    </div>
+                  )}
                 </motion.div>
               )}
 
@@ -376,6 +654,72 @@ const RoomCreate = () => {
           {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
         </p>
       </div>
+
+      {/* === PASSWORD MODAL FOR RECENT ROOMS === */}
+      <AnimatePresence>
+        {passwordModal.show && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4"
+            onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-gradient-to-br from-gray-900 to-gray-950 rounded-2xl border border-white/10 shadow-2xl p-6 sm:p-8 w-full max-w-md"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl sm:text-2xl font-bold text-white">Room Password</h3>
+                <button
+                  onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
+                  className="text-gray-400 hover:text-white transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-gray-400 text-sm mb-6">
+                Enter password for <span className="text-blue-400 font-semibold">{passwordModal.roomName}</span>
+              </p>
+
+              <input
+                type="password"
+                value={passwordModal.password}
+                onChange={(e) => setPasswordModal({ ...passwordModal, password: e.target.value })}
+                placeholder="Enter room password"
+                className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all mb-6 text-white"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && passwordModal.password) {
+                    handlePasswordModalSubmit();
+                  }
+                }}
+                autoFocus
+              />
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
+                  disabled={loading}
+                  className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10 transition disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handlePasswordModalSubmit}
+                  disabled={!passwordModal.password || loading}
+                  className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Join <ArrowRight size={16} /></>}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="mt-auto py-6 px-3"><Footer /></div>
     </div>

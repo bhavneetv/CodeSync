@@ -5,7 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-const PORT = process.env.CODE_SYNC_RUNTIME_PORT || 3001;
+const PORT = process.env.PORT || process.env.CODE_SYNC_RUNTIME_PORT || 3001;
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });

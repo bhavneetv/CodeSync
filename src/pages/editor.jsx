@@ -14,6 +14,7 @@ import { get } from 'lodash';
 import supabase from '../supabaseClient';
 import { isRoomValid } from '../function/rooms/upload-page';
 import { decrypt } from '../function/login/encryption';
+import JSZip from 'jszip';
 
 // Cursor colors for different users
 const CURSOR_COLORS = [
@@ -130,6 +131,17 @@ function getPlatform() {
     return 'mobile-app';
   }
 
+  // Check for Flutter in-app webview (desktop/mobile)
+  if (window.flutter_inappwebview) {
+    if (/win/i.test(window.navigator.platform)) {
+      return 'windows-app';
+    }
+    if (/mac/i.test(window.navigator.platform)) {
+      return 'windows-app';
+    }
+    return 'mobile-app';
+  }
+
   return 'web';
 }
 
@@ -176,6 +188,9 @@ export default function CodeEditorPage() {
   const [runtimeUnavailableNotified, setRuntimeUnavailableNotified] = useState(false);
   const [pendingFallbackRun, setPendingFallbackRun] = useState(null);
   const [runMode, setRunMode] = useState('auto'); // auto | local | api
+  const [isDownloadingZip, setIsDownloadingZip] = useState(false);
+  const [isPickingDownloadPath, setIsPickingDownloadPath] = useState(false);
+  const [isSyncingLocal, setIsSyncingLocal] = useState(false);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState([]);
@@ -224,6 +239,10 @@ export default function CodeEditorPage() {
   const runTimeoutRef = useRef(null);
   const htmlPreviewUrlRef = useRef(null);
   const lastSavedIdsRef = useRef(new Set());
+  const lastZipDownloadRef = useRef(0);
+  const lastLocalSyncRef = useRef({});
+  const hasInitialLocalSyncRef = useRef(false);
+  const lastLocalSyncTimeRef = useRef(0);
   const isApplyingRemoteChangeRef = useRef(false);
   const activeFileRef = useRef(null);
   const pendingSaveTimeoutRef = useRef(null);
@@ -316,6 +335,12 @@ export default function CodeEditorPage() {
       console.error('Failed to fetch download path:', err);
     }
   };
+
+  useEffect(() => {
+    if (currentPlatform !== 'web' && downloadPath) {
+      console.log('Download path:', downloadPath);
+    }
+  }, [currentPlatform, downloadPath]);
 
   // Save download path
   const saveDownloadPath = async (path) => {
@@ -1269,8 +1294,6 @@ export default function CodeEditorPage() {
 
   // Improved save with verification
   const handleSaveOffline = async () => {
-    console.log('Save Offline button clicked');
-    
     if (!canEdit) {
       return;
     }
@@ -1542,10 +1565,16 @@ export default function CodeEditorPage() {
   };
 
   const getRuntimeWsUrl = () => {
+    if (import.meta?.env?.VITE_RUNTIME_WS_URL) {
+      const raw = import.meta.env.VITE_RUNTIME_WS_URL;
+      if (raw.startsWith('https://')) return raw.replace('https://', 'wss://');
+      if (raw.startsWith('http://')) return raw.replace('http://', 'ws://');
+      return raw;
+    }
     if (typeof window === 'undefined') return 'ws://localhost:3001';
     const host = window.location.hostname || 'localhost';
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${protocol}://${host}:3001`;
+    return `${protocol}://${host}:8080`;
   };
 
   const connectRuntimeSocket = () => {
@@ -1560,10 +1589,12 @@ export default function CodeEditorPage() {
       try {
         const socket = new WebSocket(getRuntimeWsUrl());
         const timeout = setTimeout(() => {
-          socket.close();
+          if (socket.readyState === WebSocket.CONNECTING) {
+            socket.close();
+          }
           runtimeConnectPromiseRef.current = null;
           reject(new Error('Runtime server not reachable'));
-        }, 800);
+        }, 5000);
 
         socket.onopen = () => {
           clearTimeout(timeout);
@@ -1777,14 +1808,6 @@ export default function CodeEditorPage() {
     setPendingFallbackRun(null);
     setIsInteractiveRun(false);
 
-    const extension = currentActiveFile.name.split('.').pop();
-    const language = LANGUAGE_MAP[extension];
-
-    if (!language) {
-      alert(`Language not supported for .${extension} files`);
-      return;
-    }
-
     const activeContent = currentActiveFile.id === activeFile?.id
       ? editorContentRef.current
       : (allFileContents[currentActiveFile.id] || currentActiveFile.content || '');
@@ -1799,6 +1822,31 @@ export default function CodeEditorPage() {
 
     // Main file to execute
     const mainFileContent = activeContent || editorContent;
+    const extension = currentActiveFile.name.split('.').pop()?.toLowerCase();
+
+    if (extension === 'html' || extension === 'htm') {
+      if (htmlPreviewUrlRef.current) {
+        URL.revokeObjectURL(htmlPreviewUrlRef.current);
+      }
+      const blob = new Blob([mainFileContent || ''], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      htmlPreviewUrlRef.current = url;
+      setBottomPanelMode('terminal');
+      setShowBottomPanel(true);
+      setTerminalOutput(prev => [...prev, {
+        type: 'link',
+        content: url,
+        timestamp: new Date()
+      }]);
+      return;
+    }
+
+    const language = LANGUAGE_MAP[extension];
+
+    if (!language) {
+      alert(`Language not supported for .${extension} files`);
+      return;
+    }
     const stdinValue = terminalInput || '';
     const inputMatchers = {
       python: /(^|[^a-zA-Z0-9_])input\s*\(/,
@@ -1823,22 +1871,6 @@ export default function CodeEditorPage() {
       ],
       stdin: stdinValue || '',
     };
-
-    if (extension === 'html') {
-      if (htmlPreviewUrlRef.current) {
-        URL.revokeObjectURL(htmlPreviewUrlRef.current);
-      }
-      const blob = new Blob([mainFileContent || ''], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      htmlPreviewUrlRef.current = url;
-      setBottomPanelMode('terminal');
-      setShowBottomPanel(true);
-      setTerminalOutput(prev => [...prev, {
-        type: 'link',
-        content: url,
-        timestamp: new Date()
-      }]);
-    }
 
     const localLanguageMap = {
       python: 'python',
@@ -2524,10 +2556,211 @@ export default function CodeEditorPage() {
     }
   };
 
+  const pickDownloadPath = async () => {
+    if (isPickingDownloadPath) return;
+    setIsPickingDownloadPath(true);
+    try {
+      if (window.flutter_inappwebview?.callHandler) {
+        const result = await window.flutter_inappwebview.callHandler('pickDownloadPath');
+        if (result?.success && result?.path) {
+          setDownloadPath(result.path);
+          const saveResult = await saveDownloadPath(result.path);
+          if (!saveResult.success) {
+            alert(`Failed to save: ${saveResult.error}`);
+          } else if (result?.warning) {
+            alert(result.warning);
+          } else {
+            await syncFilesToLocalPath();
+          }
+        } else if (result?.error) {
+          alert(result.error);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to pick download path:', err);
+      alert(`Failed to pick download path: ${err.message}`);
+    } finally {
+      setIsPickingDownloadPath(false);
+    }
+  };
+
+  const handleSaveToDevice = async () => {
+    if (isDownloadingZip) return;
+    if (currentPlatform === 'web') {
+      await handleDownloadProjectZip();
+      return;
+    }
+    await syncFilesToLocalPath();
+  };
+
+  const hashString = (value) => {
+    let hash = 0;
+    for (let i = 0; i < value.length; i += 1) {
+      hash = ((hash << 5) - hash) + value.charCodeAt(i);
+      hash |= 0;
+    }
+    return hash.toString();
+  };
+
+  const collectFilesFromTree = (node, parentPath = '') => {
+    if (!node) return [];
+    const files = [];
+    if (node.type === 'file') {
+      const path = node.repoPath || (parentPath ? `${parentPath}/${node.name}` : node.name);
+      files.push({
+        id: node.id,
+        path,
+        storagePath: node.fullPath,
+        name: node.name
+      });
+      return files;
+    }
+    if (node.type === 'folder' && node.children) {
+      const nextPath = node.name === 'project' ? parentPath : (parentPath ? `${parentPath}/${node.name}` : node.name);
+      node.children.forEach((child) => {
+        files.push(...collectFilesFromTree(child, nextPath));
+      });
+    }
+    return files;
+  };
+
+  const syncFilesToLocalPath = async () => {
+    if (!downloadPath) {
+      alert('Please set a download path first.');
+      return;
+    }
+    if (isSyncingLocal) return;
+    setIsSyncingLocal(true);
+
+    const now = Date.now();
+    if (now - lastLocalSyncTimeRef.current < 5000) {
+      alert('Please wait a few seconds before syncing again.');
+      setIsSyncingLocal(false);
+      return;
+    }
+    lastLocalSyncTimeRef.current = now;
+
+    const files = collectFilesFromTree(fileTree);
+    const lastMap = lastLocalSyncRef.current || {};
+    const currentMap = {};
+    const upserts = [];
+    const deletes = [];
+
+    for (const file of files) {
+      const content = allFileContents[file.id] ?? await readEncryptedFile(file.storagePath);
+      const hash = hashString(content || '');
+      currentMap[file.id] = { path: file.path, hash };
+
+      const prev = lastMap[file.id];
+      const isFirst = !hasInitialLocalSyncRef.current;
+      const changed = !prev || prev.hash !== hash || prev.path !== file.path;
+
+      if (isFirst || changed) {
+        upserts.push({ path: file.path, content: content || '' });
+        if (prev && prev.path && prev.path !== file.path) {
+          deletes.push(prev.path);
+        }
+      }
+    }
+
+    if (hasInitialLocalSyncRef.current) {
+      Object.keys(lastMap).forEach((id) => {
+        if (!currentMap[id]) {
+          deletes.push(lastMap[id].path);
+        }
+      });
+    }
+
+    if (upserts.length === 0 && deletes.length === 0) {
+      return;
+    }
+
+    const payload = {
+      basePath: downloadPath,
+      upserts,
+      deletes
+    };
+
+    try {
+      if (window.flutter_inappwebview?.callHandler) {
+        const result = await window.flutter_inappwebview.callHandler('saveProject', payload);
+        console.log('[CodeSync] saveProject result:', result);
+        if (result?.path && result.path !== downloadPath) {
+          setDownloadPath(result.path);
+          await saveDownloadPath(result.path);
+        }
+        if (result?.warning) {
+          alert(result.warning);
+        }
+      } else if (window.electron?.saveProject) {
+        await window.electron.saveProject(payload);
+      } else {
+        console.warn('No native handler for saveProject');
+      }
+      lastLocalSyncRef.current = currentMap;
+      hasInitialLocalSyncRef.current = true;
+    } catch (err) {
+      console.error('Local sync failed:', err);
+      alert(`Local sync failed: ${err.message}`);
+    } finally {
+      setIsSyncingLocal(false);
+    }
+  };
+
+  const handleDownloadProjectZip = async () => {
+    if (isDownloadingZip) return;
+    const now = Date.now();
+    if (now - lastZipDownloadRef.current < 10000) {
+      alert('Please wait a few seconds before downloading again.');
+      return;
+    }
+    lastZipDownloadRef.current = now;
+    setIsDownloadingZip(true);
+
+    try {
+      const files = await getRoomFiles(roomLink);
+      if (!files || files.length === 0) {
+        alert('No files found in this room.');
+        return;
+      }
+
+      const zip = new JSZip();
+      const paths = files.map((file) => {
+        const baseName = file.extension ? `${file.name}.${file.extension}` : file.name;
+        return {
+          path: file.folderPath ? `${file.folderPath}/${baseName}` : baseName,
+          storagePath: file.storagePath
+        };
+      }).sort((a, b) => a.path.localeCompare(b.path));
+
+      for (const item of paths) {
+        const content = await readEncryptedFile(item.storagePath);
+        zip.file(item.path, content || '');
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${roomName || 'project'}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download zip:', err);
+      alert(`Failed to download zip: ${err.message}`);
+    } finally {
+      setIsDownloadingZip(false);
+    }
+  };
+
   const isOwner = userRole === 'owner' || currentUserId === roomOwnerId;
   const isAdmin = userRole === 'admin' || isOwner;
   const canEdit = isOwner || userRole === 'editor' || userRole === 'admin';
   const canPushToGitHub = isOwner;
+  const activeExtension = activeFile?.name?.split('.').pop()?.toLowerCase();
+  const canRunActive = !!activeFile && (LANGUAGE_MAP[activeExtension] || activeExtension === 'html' || activeExtension === 'htm');
   const uniqueConnectedUsers = React.useMemo(() => {
     const map = new Map();
     connectedUsers.forEach((u) => {
@@ -2799,16 +3032,16 @@ export default function CodeEditorPage() {
           {showActionButtons ? (
             <div className="flex items-center gap-1.5">
               <button
-                onClick={handleSaveOffline}
-                disabled={isSaving}
+                onClick={handleSaveToDevice}
+                disabled={!canEdit || isDownloadingZip || isSyncingLocal}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${
-                  isSaving
+                  isDownloadingZip || isSyncingLocal
                     ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
                     : 'bg-slate-700 hover:bg-slate-600 text-white'
                 }`}
-                title="Save Offline"
+                title={isDownloadingZip ? 'Preparing download...' : 'Save Offline'}
               >
-                {isSaving ? (
+                {isDownloadingZip || isSyncingLocal ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <HardDrive className="w-4 h-4" />
@@ -2834,22 +3067,24 @@ export default function CodeEditorPage() {
                 </button>
               )}
 
-              <button
-                onClick={handleRunCode}
-                disabled={!canEdit || isRunning || !activeFile}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${
-                  canEdit && !isRunning && activeFile
-                    ? 'primary-button text-white'
-                    : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-                }`}
-                title="Run Code"
-              >
-                {isRunning ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Play className="w-4 h-4" />
-                )}
-              </button>
+              {canRunActive && (
+                <button
+                  onClick={handleRunCode}
+                  disabled={!canEdit || isRunning || !activeFile}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${
+                    canEdit && !isRunning && activeFile
+                      ? 'primary-button text-white'
+                      : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                  }`}
+                  title="Run Code"
+                >
+                  {isRunning ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Play className="w-4 h-4" />
+                  )}
+                </button>
+              )}
             </div>
           ) : (
             // Save button - shown when there are unsaved changes
@@ -3574,6 +3809,22 @@ export default function CodeEditorPage() {
                             <p className="flex-1 text-sm font-medium bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-1.5">
                               {downloadPath || 'Not set'}
                             </p>
+                            {window.flutter_inappwebview?.callHandler && (
+                              <button
+                                onClick={pickDownloadPath}
+                                disabled={isPickingDownloadPath}
+                                className={`p-2 rounded-lg transition-all modern-button ${
+                                  isPickingDownloadPath ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed' : 'hover:bg-slate-700/50'
+                                }`}
+                                title="Pick Folder"
+                              >
+                                {isPickingDownloadPath ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Folder className="w-4 h-4" />
+                                )}
+                              </button>
+                            )}
                             <button
                               onClick={() => setIsEditingDownloadPath(true)}
                               className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button"
@@ -3587,6 +3838,29 @@ export default function CodeEditorPage() {
                           Files will be downloaded to this location when you save offline
                         </p>
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Windows Download Zip */}
+                {currentPlatform === 'windows-app' && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-300">Export Project</h3>
+                    <div className="glass rounded-lg p-4 space-y-3">
+                      <p className="text-xs text-slate-500">
+                        Download a zip of all files in this room.
+                      </p>
+                      <button
+                        onClick={handleDownloadProjectZip}
+                        disabled={isDownloadingZip}
+                        className={`px-4 py-2 rounded-lg text-sm transition-all modern-button ${
+                          isDownloadingZip
+                            ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
+                            : 'primary-button text-white'
+                        }`}
+                      >
+                        {isDownloadingZip ? 'Preparing...' : 'Download Zip'}
+                      </button>
                     </div>
                   </div>
                 )}
