@@ -10,6 +10,7 @@ import Navbar from '../Components/navbar.jsx';
 import Footer from '../Components/footer.jsx';
 import { Link } from 'react-router-dom';
 import  supabase  from '../supabaseClient.js';
+import { showToast } from '../Components/toast-notification.jsx';
 
 const LandingPage = () => {
 
@@ -60,6 +61,7 @@ const LandingPage = () => {
       [e.target.name]: e.target.value
     });
   };
+
 
 
 

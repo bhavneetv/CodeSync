@@ -9,6 +9,7 @@ import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Gl
 import { useNavigate } from 'react-router-dom';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
 import { loginWithGithub } from '../function/login/auth';
+import { showToast } from '../Components/toast-notification.jsx';
 
 const RoomCreate = () => {
   // Views: 'main', 'join', 'create_details', 'create_method', 'github_select'
@@ -47,6 +48,7 @@ const RoomCreate = () => {
 
   // Check Login Status
   useEffect(() => {
+      showToast("tst" , "success");
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       
