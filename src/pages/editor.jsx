@@ -5,7 +5,7 @@ import {
   ChevronRight, ChevronDown, File, Folder, X, Menu, Terminal as TerminalIcon,
   Maximize2, Minimize2, AlertTriangle, Crown, Shield, LogOut,
   FileCode, FileJson, FileText, Image as ImageIcon, Database, Github, GripVertical,
-  Loader2, Download, MessageCircle, Send, Copy, Check, Key, UserX, UserPlus,
+  Loader2, Download, MessageCircle, Send, Copy, Check, Key, UserX, UserPlus, RefreshCw,
   CloudUpload, HardDrive
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
@@ -15,6 +15,7 @@ import supabase from '../supabaseClient';
 import { isRoomValid } from '../function/rooms/upload-page';
 import { decrypt } from '../function/login/encryption';
 import JSZip from 'jszip';
+import { showToast } from '../Components/toast-notification.jsx';
 
 // Cursor colors for different users
 const CURSOR_COLORS = [
@@ -191,6 +192,7 @@ export default function CodeEditorPage() {
   const [isDownloadingZip, setIsDownloadingZip] = useState(false);
   const [isPickingDownloadPath, setIsPickingDownloadPath] = useState(false);
   const [isSyncingLocal, setIsSyncingLocal] = useState(false);
+  const [htmlPreviewUrl, setHtmlPreviewUrl] = useState('');
 
   // Chat state
   const [chatMessages, setChatMessages] = useState([]);
@@ -1361,22 +1363,17 @@ export default function CodeEditorPage() {
       }
 
       if (saved.length > 0) {
-        // Show a brief success message
-        const successMsg = document.createElement('div');
-        successMsg.textContent = `Saved ${saved.length} file(s) offline`;
-        successMsg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:14px;font-weight:500;';
-        document.body.appendChild(successMsg);
-        setTimeout(() => successMsg.remove(), 2000);
+        showToast(`Saved ${saved.length} file(s)`, 'success');
       }
 
       if (failed.length > 0) {
         console.error('Some files failed to save:', failed);
-        alert(`Warning: ${failed.length} file(s) failed to save:\n${failed.map(f => f.error).join('\n')}\n\nPlease try again.`);
+        showToast(`Failed to save ${failed.length} file(s)`, 'error');
       }
 
     } catch (err) {
       console.error('Failed to save:', err);
-      alert(`Failed to save files: ${err.message}\n\nPlease try again.`);
+      showToast(`Failed to save files: ${err.message}`, 'error');
     } finally {
       setIsSaving(false);
     }
@@ -1831,13 +1828,9 @@ export default function CodeEditorPage() {
       const blob = new Blob([mainFileContent || ''], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       htmlPreviewUrlRef.current = url;
+      setHtmlPreviewUrl(url);
       setBottomPanelMode('terminal');
       setShowBottomPanel(true);
-      setTerminalOutput(prev => [...prev, {
-        type: 'link',
-        content: url,
-        timestamp: new Date()
-      }]);
       return;
     }
 
@@ -2255,7 +2248,7 @@ export default function CodeEditorPage() {
             });
           }
         } else {
-          alert(`Failed to rename: ${result.error}`);
+          showToast(`Failed to rename: ${result.error}`, 'error');
         }
       } else {
         const renameInTree = (node, path) => {
@@ -2295,7 +2288,7 @@ export default function CodeEditorPage() {
       }
     } catch (err) {
       console.error('Error renaming:', err);
-      alert(`Failed to rename: ${err.message}`);
+      showToast(`Failed to rename: ${err.message}`, 'error');
     } finally {
       setRenameModal({ show: false, item: null, path: [] });
       setIsRenamingItem(false);
@@ -2678,7 +2671,8 @@ export default function CodeEditorPage() {
     const payload = {
       basePath: downloadPath,
       upserts,
-      deletes
+      deletes,
+      roomName: roomName || 'codesync'
     };
 
     try {
@@ -3005,28 +2999,14 @@ export default function CodeEditorPage() {
             <span>{onlineCount} online</span>
           </div>
 
-          <div className="flex items-center gap-1 lg:hidden">
-            <button
-              onClick={() => setSelectParentModal({ show: true, mode: 'file' })}
-              disabled={!canEdit || isCreatingFile}
-              className={`p-2 rounded-lg transition-all modern-button ${
-                canEdit && !isCreatingFile ? 'hover:bg-emerald-500/10 text-emerald-400' : 'text-slate-500 cursor-not-allowed opacity-50'
-              }`}
-              title="New File"
-            >
-              {isCreatingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-            </button>
-            <button
-              onClick={() => setSelectParentModal({ show: true, mode: 'folder' })}
-              disabled={!canEdit || isCreatingFolder}
-              className={`p-2 rounded-lg transition-all modern-button ${
-                canEdit && !isCreatingFolder ? 'hover:bg-emerald-500/10 text-emerald-400' : 'text-slate-500 cursor-not-allowed opacity-50'
-              }`}
-              title="New Folder"
-            >
-              {isCreatingFolder ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderPlus className="w-4 h-4" />}
-            </button>
-          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button flex-shrink-0"
+            title="Refresh"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+
 
           {/* Action buttons - shown after successful save */}
           {showActionButtons ? (
@@ -3434,34 +3414,46 @@ export default function CodeEditorPage() {
                       </div>
                     </div>
                     <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1 min-h-0">
-                      {terminalOutput.map((output, idx) => (
-                        <div
-                          key={idx}
-                          className={`${
-                            output.type === 'error'
-                              ? 'text-red-400'
-                              : output.type === 'system'
-                              ? 'text-blue-400'
-                              : output.type === 'link'
-                              ? 'text-emerald-300'
-                              : 'text-slate-300'
-                          }`}
-                        >
-                          {output.type === 'link' ? (
-                            <a
-                              href={output.content}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="underline hover:text-emerald-200"
-                            >
-                              Open HTML Preview
-                            </a>
-                          ) : (
-                            output.content
-                          )}
+                      {htmlPreviewUrl ? (
+                        <div className="w-full h-full min-h-[200px]">
+                          <iframe
+                            title="HTML Preview"
+                            src={htmlPreviewUrl}
+                            className="w-full h-full rounded-lg border border-slate-700/60 bg-black"
+                          />
                         </div>
-                      ))}
-                      <div ref={terminalEndRef} />
+                      ) : (
+                        <>
+                          {terminalOutput.map((output, idx) => (
+                            <div
+                              key={idx}
+                              className={`${
+                                output.type === 'error'
+                                  ? 'text-red-400'
+                                  : output.type === 'system'
+                                  ? 'text-blue-400'
+                                  : output.type === 'link'
+                                  ? 'text-emerald-300'
+                                  : 'text-slate-300'
+                              }`}
+                            >
+                              {output.type === 'link' ? (
+                                <a
+                                  href={output.content}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="underline hover:text-emerald-200"
+                                >
+                                  Open HTML Preview
+                                </a>
+                              ) : (
+                                output.content
+                              )}
+                            </div>
+                          ))}
+                          <div ref={terminalEndRef} />
+                        </>
+                      )}
                     </div>
                     <div className="p-2 border-t border-slate-700/60 flex gap-2 flex-shrink-0">
                       {pendingRunRequest ? (
