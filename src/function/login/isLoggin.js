@@ -22,6 +22,21 @@ export async function isLoggin(val) {
     }
 
 }
+export async function isAnyLogin() {
+    // console.log("Checking if user is logged in...");
+    const {
+        data: { session   }, error
+
+    } = await supabase.auth.getSession();
+    // console.log("Session data:", session , "Error:", error );
+
+    if (!session || !session.user || session == null) return false;
+    if(session.user.is_anonymous == true) return false;
+
+    
+    return true
+}
+
 function redirectIfLoggedIn() {
     window.location.href = '/create-room';
 }

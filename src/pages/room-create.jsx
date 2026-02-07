@@ -1,18 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Footer from '../Components/footer';
-import Navbar from '../Components/navbar.jsx';
-import { isLoggin } from '../function/login/isLoggin.js';
-import { createRoom } from '../function/rooms/room-main.js';
 import supabase from '../supabaseClient.js';
-import { Terminal, Users, Plus, ArrowRight, ArrowLeft, Loader2, Github, Lock, Globe, FileCode, FolderGit2, Clock, User, X } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Terminal, Users, Plus, ArrowRight, Loader2, Lock, Globe, FolderGit2, Clock, User, X, Pencil, LogOut, LogIn } from 'lucide-react';
+import { createRoom } from '../function/rooms/room-main.js';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
-import { loginWithGithub } from '../function/login/auth';
+import { loginWithGithub, loginWithGithubReturn, syncGithubTokenToProfile } from '../function/login/auth';
+import { fetchAllGithubRepos, getGithubToken, importRepoContents } from '../function/files/github-handle';
+import { isAnyLogin } from '../function/login/isLoggin.js';
+import { set } from 'lodash';
 import { showToast } from '../Components/toast-notification.jsx';
 
 const RoomCreate = () => {
-  // Views: 'main', 'join', 'create_details', 'create_method', 'github_select'
+  // Views: 'main', 'join', 'create_details', 'github_select'
   const [view, setView] = useState('main');
   const [loading, setLoading] = useState(false);
 
@@ -20,18 +19,28 @@ const RoomCreate = () => {
   const [roomName, setRoomName] = useState('');
   const [roomPassword, setRoomPassword] = useState('');
   const [roomCode, setRoomCode] = useState('');
-
   const [showPasswordInput, setShowPasswordInput] = useState(false);
+
+  // User State
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUserId, setCurrentUserId] = useState(null);
+  const [userEmail, setUserEmail] = useState('');
+  const [userName, setUserName] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [tempName, setTempName] = useState('');
 
-  // Recent Rooms - NEW: Separate state for joined and created
+  // Recent Rooms
   const [recentJoinedRooms, setRecentJoinedRooms] = useState([]);
   const [recentCreatedRooms, setRecentCreatedRooms] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
-  const [roomViewMode, setRoomViewMode] = useState('joined'); // 'joined' or 'created'
+  const [roomViewMode, setRoomViewMode] = useState('joined');
+  const [ghToken, setGhToken] = useState(null);
+  const [pendingGithubRestore, setPendingGithubRestore] = useState(false);
+  const [repos, setRepos] = useState([]);
+  const [importStatus, setImportStatus] = useState('');
+  const [loadingRepos, setLoadingRepos] = useState(false);
 
-  // Password Modal for Recent Rooms
+  // Password Modal
   const [passwordModal, setPasswordModal] = useState({
     show: false,
     roomId: null,
@@ -39,96 +48,230 @@ const RoomCreate = () => {
     password: ''
   });
 
-  // GitHub State
-  const [repos, setRepos] = useState([]);
-  const [ghToken, setGhToken] = useState(null);
-  const [importStatus, setImportStatus] = useState('');
 
-  const navigate = useNavigate();
+
 
   // Check Login Status
   useEffect(() => {
-      showToast("tst" , "success");
-    (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (session?.user) {
-        setIsLoggedIn(true);
-        setCurrentUserId(session.user.id);
-        fetchRecentRooms(session.user.id);
-      } else {
+    const initAuth = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+
+      if (!session || session.user.is_anonymous) {
         setIsLoggedIn(false);
         setCurrentUserId(null);
+        setUserName("Login");
+        setGhToken(null);
+        return;
       }
-    })();
+
+      // ✅ Real signed-in user
+      setIsLoggedIn(true);
+      setCurrentUserId(session.user.id);
+      setUserEmail(session.user.email);
+
+      // Fetch profile name
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("name")
+        .eq("id", session.user.id)
+        .single();
+
+      const name =
+        profileData?.name ||
+        session.user.email?.split("@")[0] ||
+        "User";
+
+      setUserName(name);
+      setTempName(name);
+
+      const { token: syncedToken } = await syncGithubTokenToProfile();
+      setGhToken(syncedToken || null);
+
+      const redirectRaw =
+        sessionStorage.getItem("github_oauth_return") ||
+        localStorage.getItem("github_oauth_return");
+      if (redirectRaw) {
+        try {
+          const redirect = JSON.parse(redirectRaw);
+          if (redirect?.view) {
+            setView(redirect.view);
+            setPendingGithubRestore(true);
+          }
+        } catch (e) {
+          // ignore malformed storage
+        }
+        sessionStorage.removeItem("github_oauth_return");
+        localStorage.removeItem("github_oauth_return");
+      }
+
+      fetchRecentRooms(session.user.id);
+    };
+
+    initAuth();
   }, []);
 
-  // Fetch Recent Rooms - UPDATED to fetch both joined and created
+  useEffect(() => {
+    if (pendingGithubRestore && ghToken) {
+      setPendingGithubRestore(false);
+    }
+  }, [pendingGithubRestore, ghToken]);
+
+  useEffect(() => {
+    if (view !== 'github_select' || !ghToken) return;
+
+    const loadRepos = async () => {
+      setLoadingRepos(true);
+      setImportStatus('Loading repositories...');
+      try {
+        const token = await getGithubToken();
+        if (!token) {
+          setRepos([]);
+          setImportStatus('');
+          return;
+        }
+
+        const repoList = await fetchAllGithubRepos(token);
+        setRepos(repoList);
+        setImportStatus('');
+      } catch (e) {
+        console.error("Failed to load GitHub repos:", e);
+        setRepos([]);
+        setImportStatus('Failed to load repositories');
+      } finally {
+        setLoadingRepos(false);
+      }
+    };
+
+    loadRepos();
+  }, [view, ghToken]);
+
+
+
+  // Handle Name Edit
+  const handleNameEdit = async () => {
+    if (isEditingName && tempName.trim() !== userName) {
+
+
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({ name: tempName.trim() })
+        .eq('id', currentUserId);
+
+      if (!error) {
+        setUserName(tempName.trim());
+        showToast("Updating name to " + tempName.trim(), "info", 1200);
+      }
+    }
+    setIsEditingName(!isEditingName);
+  };
+
+  // Handle Logout
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    window.location.reload();
+  };
+
+  // Handle Login
+  const handleLogin = async () => {
+    await loginWithGithub();
+  };
+
+  const handleGithubConnect = async () => {
+    const payload = { path: "/create-room", view: "github_select", ts: Date.now() };
+    sessionStorage.setItem("github_oauth_return", JSON.stringify(payload));
+    localStorage.setItem("github_oauth_return", JSON.stringify(payload));
+    await loginWithGithubReturn("/create-room");
+  };
+
+  // Fetch Recent Rooms
   const fetchRecentRooms = async (userId) => {
     setLoadingRecent(true);
+
     try {
-      // === FETCH RECENTLY JOINED ROOMS ===
+      // =========================
+      // JOINED ROOMS
+      // =========================
       const { data: memberData, error: memberError } = await supabase
-        .from('room_members')
-        .select('room_id, joined_at')
-        .eq('user_id', userId)
-        .neq('room_id', userId) // Exclude rooms they own (to avoid duplicates)
-        .order('joined_at', { ascending: false })
+        .from("room_members")
+        .select("room_id, joined_at")
+        .eq("user_id", userId)
+        .order("joined_at", { ascending: false })
         .limit(3);
 
-      if (!memberError && memberData && memberData.length > 0) {
+      if (memberError) throw memberError;
+
+      if (memberData?.length) {
         const roomIds = memberData.map(m => m.room_id);
+
         const { data: roomsData, error: roomsError } = await supabase
-          .from('rooms')
-          .select('id, room_name, owner_id, has_password')
-          .in('id', roomIds);
+          .from("rooms")
+          .select("id, room_name, owner_id, room_password , room_link, room_code")
+          .in("id", roomIds);
 
-        if (!roomsError && roomsData) {
-          const ownerIds = [...new Set(roomsData.map(r => r.owner_id))];
-          const { data: profilesData } = await supabase
-            .from('profiles')
-            .select('id, name')
-            .in('id', ownerIds);
+        if (roomsError) throw roomsError;
 
-          const joinedRooms = memberData.map(member => {
-            const room = roomsData.find(r => r.id === member.room_id);
-            const owner = profilesData?.find(p => p.id === room?.owner_id);
+        const ownerIds = [...new Set(roomsData.map(r => r.owner_id))];
 
-            return {
-              roomId: member.room_id,
-              roomName: room?.room_name || 'Unnamed Room',
-              joinedAt: member.joined_at,
-              ownerName: owner?.name || 'Unknown',
-              hasPassword: room?.has_password || false
-            };
-          });
+        const { data: profilesData, error: profilesError } = await supabase
+          .from("profiles")
+          .select("id, name")
+          .in("id", ownerIds);
 
-          setRecentJoinedRooms(joinedRooms);
-        }
+        if (profilesError) throw profilesError;
+
+        const joinedRooms = memberData.map(member => {
+          const room = roomsData.find(r => r.id === member.room_id);
+          if (!room) return null;
+
+          const isOwner = room.owner_id === userId;
+          const ownerProfile = profilesData?.find(p => p.id === room.owner_id);
+
+          return {
+            roomId: room.id,
+            roomCode: room.room_code,
+            roomLink: room.room_link,
+            roomName: room.room_name || "Unnamed Room",
+            joinedAt: member.joined_at,
+            ownerName: isOwner ? "You" : (ownerProfile?.name || "Owner"),
+            hasPassword: room.room_password !== null
+          };
+        }).filter(Boolean);
+
+
+        setRecentJoinedRooms(joinedRooms);
+      } else {
+        setRecentJoinedRooms([]);
       }
 
-      // === FETCH RECENTLY CREATED ROOMS ===
+      // =========================
+      // CREATED ROOMS
+      // =========================
       const { data: createdRoomsData, error: createdError } = await supabase
-        .from('rooms')
-        .select('id, room_name, created_at, has_password')
-        .eq('owner_id', userId)
-        .order('created_at', { ascending: false })
+        .from("rooms")
+        .select("id, room_name, created_at, room_password , room_link")
+        .eq("owner_id", userId)
+        .order("created_at", { ascending: false })
         .limit(3);
 
-      if (!createdError && createdRoomsData) {
-        const createdRooms = createdRoomsData.map(room => ({
-          roomId: room.id,
-          roomName: room.room_name || 'Unnamed Room',
-          joinedAt: room.created_at, // Using created_at as the timestamp
-          ownerName: 'You',
-          hasPassword: room.has_password || false
-        }));
+      if (createdError) throw createdError;
 
-        setRecentCreatedRooms(createdRooms);
-      }
+      const createdRooms = createdRoomsData.map(room => ({
+        roomId: room.i,
+        roomName: room.room_name || "Unnamed Room",
+        joinedAt: room.created_at,
+        ownerName: "You",
+        hasPassword: room.room_password !== null
+      }));
+
+      setRecentCreatedRooms(createdRooms);
 
     } catch (error) {
-      console.error('Error fetching recent rooms:', error);
+      console.error("Error fetching recent rooms:", error);
+      showToast("Failed to load recent rooms.", "error", 1500);
       setRecentJoinedRooms([]);
       setRecentCreatedRooms([]);
     } finally {
@@ -136,42 +279,49 @@ const RoomCreate = () => {
     }
   };
 
+
   // Handle Recent Room Join
-  const handleRecentRoomJoin = async (roomId, hasPassword) => {
+  const handleRecentRoomJoin = async (roomCode, roomLink, roomId, hasPassword) => {
     if (hasPassword) {
       setPasswordModal({
         show: true,
-        roomId: roomId,
-        roomName: getCurrentRooms().find(r => r.roomId === roomId)?.roomName || '',
-        password: ''
+        roomCode,
+        roomLink,
+        roomName:
+          getCurrentRooms().find(r => r.roomCode === roomCode)?.roomName || "",
+        password: ""
       });
-    } else {
-      // Join directly
-      const res = await handleRoomJoin(roomId, null, false);
-      if (res.status === "joined") {
-        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+    } 
+    else {
+      const res = await handleRoomJoin(roomCode, null, false);
+
+      if (res?.status === "joined") {
+        window.location.href = "/editor?roomId=" + roomLink + "&token=" + res.token;
       } else {
-        alert("Failed to join room.");
+        showToast("Failed to join room. Please try again.", "error", 1200);
+
       }
     }
   };
+
 
   // Submit Password for Recent Room
   const handlePasswordModalSubmit = async () => {
     setLoading(true);
     const res = await handleRoomJoin(
-      passwordModal.roomId,
+      passwordModal.roomCode,
       passwordModal.password,
       true
     );
 
     if (res.status === "wrong_password") {
-      alert("Incorrect password.");
+      showToast("Incorrect password.", "error", 1200);
       setLoading(false);
     } else if (res.status === "joined") {
+      setPasswordModal({ show: false, roomId: null, roomName: '', password: '', roomCode: '' });
       window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
     } else {
-      alert("Failed to join room.");
+      showToast("Failed to join room.", "error", 1200);
       setLoading(false);
     }
   };
@@ -196,117 +346,13 @@ const RoomCreate = () => {
     return date.toLocaleDateString();
   };
 
-  // --- GitHub Logic ---
-  const handleGithubView = async () => {
-    setView('github_select');
-    // Get Session & Token
-    const { data: { session } } = await supabase.auth.getSession();
+  // GitHub Logic
 
-    if (session?.provider_token) {
-      setGhToken(session.provider_token);
-      fetchRepos(session.provider_token);
-    }
-  };
 
-  const fetchRepos = async (token) => {
-    setLoading(true);
-    try {
-      const res = await fetch('https://api.github.com/user/repos?sort=updated&per_page=50', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = await res.json();
-      setRepos(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const handleImportRepository = async (repo) => {
-    setLoading(true);
-    const finalRoomName = roomName.trim() || repo.name;
-    setImportStatus(`Creating room "${finalRoomName}"...`);
-
-    try {
-      // 1. Create Room
-      const roomResult = await createRoom(finalRoomName, roomPassword);
-      if (!roomResult.success) throw new Error("Failed to create room");
-      const newRoomId = roomResult.roomLink;
-
-      // 2. Fetch File Tree
-      setImportStatus(`Fetching files from GitHub...`);
-      const treeRes = await fetch(`https://api.github.com/repos/${repo.owner.login}/${repo.name}/git/trees/${repo.default_branch}?recursive=1`, {
-        headers: { Authorization: `Bearer ${ghToken}` }
-      });
-      const treeData = await treeRes.json();
-
-      // Filter blobs (files) - Limit to 50
-      const filesToFetch = treeData.tree.filter(n => n.type === 'blob').slice(0, 50);
-
-      setImportStatus(`Importing ${filesToFetch.length} files...`);
-
-      // 3. Download & Prepare Files (With Binary Check)
-      const filePromises = filesToFetch.map(async (fileNode) => {
-        try {
-          const contentRes = await fetch(fileNode.url, {
-            headers: { Authorization: `Bearer ${ghToken}` }
-          });
-          const contentData = await contentRes.json();
-
-          // Decode Base64
-          const decodedContent = atob(contentData.content);
-
-          // CRITICAL FIX: Check for Null Bytes (\u0000)
-          // If a file has this char, it is binary (image/exe), so we skip it.
-          if (decodedContent.includes('\u0000')) {
-            console.warn(`Skipping binary file: ${fileNode.path}`);
-            return null;
-          }
-
-          return {
-            room_id: newRoomId,
-            file_path: fileNode.path,
-            file_name: fileNode.path.split('/').pop(),
-            content: decodedContent,
-            language: fileNode.path.split('.').pop()
-          };
-        } catch (err) {
-          console.error(`Failed to fetch ${fileNode.path}`, err);
-          return null;
-        }
-      });
-
-      // Wait for all downloads
-      const filesResult = await Promise.all(filePromises);
-
-      // Filter out the nulls (the binary files we skipped)
-      const validFiles = filesResult.filter(file => file !== null);
-
-      if (validFiles.length === 0) {
-        throw new Error("No valid text files found in this repo.");
-      }
-
-      // 4. Insert into Supabase
-      const { error } = await supabase.from('room_files').insert(validFiles);
-
-      if (error) throw error;
-
-      // 5. Redirect
-      window.location.href = `/editor?roomId=${newRoomId}`;
-
-    } catch (error) {
-      console.error(error);
-      alert("Import Failed: " + error.message);
-      setLoading(false);
-      setImportStatus('');
-    }
-  };
-
-  // --- Create Empty Room Logic ---
+  // Create Empty Room
   const handleCreateEmptyRoom = async () => {
     setLoading(true);
-
     try {
       const result = await createRoom(roomName.trim(), roomPassword);
       setLoading(false);
@@ -314,21 +360,15 @@ const RoomCreate = () => {
       if (!result.success) return;
 
       if (result.type === "temporary") {
-        window.location.href =
-          `/editor?roomId=${result.roomId}&token=${result.token}`;
+        window.location.href = `/editor?roomId=${result.roomId}&token=${result.token}`;
+      } else {
+        window.location.href = `/upload?roomId=${result.roomId}&token=${result.token}`;
       }
-
-      else {
-        window.location.href =
-          `/upload?roomId=${result.roomId}&token=${result.token}`;
-      }
-
     } catch (err) {
       setLoading(false);
-      console.error("Failed to create room:", err);
+      showToast("Error creating room. Please try again.", "error", 1200);
     }
   };
-
 
   const handleJoinNext = async () => {
     if (!showPasswordInput) {
@@ -343,7 +383,6 @@ const RoomCreate = () => {
       }
     } else {
       setLoading(true);
-
       const res = await handleRoomJoin(roomCode, roomPassword, true);
 
       if (res.status === "wrong_password") {
@@ -355,7 +394,6 @@ const RoomCreate = () => {
     }
   };
 
-
   const handleSoloCode = () => {
     setLoading(true);
     createRoom('Solo Room').then((result) => {
@@ -363,131 +401,291 @@ const RoomCreate = () => {
     });
   };
 
-  // Navigation Logic
-  const handleBack = () => {
-    if (view === 'create_method') setView('create_details');
-    else if (view === 'github_select') setView('create_method');
-    else if (view === 'create_details') {
-      setView('main');
-      setRoomName('');
-      setRoomPassword('');
+  const handleImportRepository = async (repo) => {
+    try {
+      setLoading(true);
+      setImportStatus('Creating room...');
+      const result = await createRoom(repo.name, roomPassword);
+      if (!result?.success) {
+        showToast("Failed to create room for GitHub import.", "error", 1500);
+        setLoading(false);
+        setImportStatus('');
+        return;
+      }
+
+      const token = await getGithubToken();
+      if (!token) {
+        showToast("GitHub not connected.", "error", 1500);
+        setLoading(false);
+        setImportStatus('');
+        return;
+      }
+
+      setImportStatus('Importing repository...');
+      await importRepoContents({
+        owner: repo.owner,
+        repo: repo.name,
+        roomLink: result.roomId,
+        token
+      });
+
+      setImportStatus('Finalizing...');
+      window.location.href = `/editor?roomId=${result.roomId}&token=${result.token}`;
+    } catch (err) {
+      console.error("GitHub import failed:", err);
+      showToast("GitHub import failed. Please try again.", "error", 1500);
+      setLoading(false);
+      setImportStatus('');
     }
-    else {
-      setView('main');
-      setRoomCode('');
-      setShowPasswordInput(false);
-    }
-    setLoading(false);
-    setImportStatus('');
   };
 
+  // Navigation Logic
+
+  const handleBack = () => {
+    setView('main');
+    setShowPasswordInput(false);
+    setRoomPassword('');
+    setRoomCode('');
+  };
+
+
   const cardVariants = {
-    main: { scale: 0.77, width: '100%', maxWidth: '500px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } },
-    small: { scale: 0.77, width: '100%', maxWidth: '420px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } },
-    large: { scale: 0.77, width: '100%', maxWidth: '600px', transition: { duration: 0.5, ease: [0.4, 0, 0.2, 1] } }
+    main: {
+      scale: 1,
+      width: '100%',
+      maxWidth: '520px',
+      transition: { duration: 0.4, ease: [0.4, 0, 0.2, 1] }
+    },
+    small: {
+      scale: 1,
+      width: '100%',
+      maxWidth: '440px',
+      transition: { duration: 0.4, ease: [0.4, 0, 0.2, 1] }
+    },
+    large: {
+      scale: 1,
+      width: '100%',
+      maxWidth: '620px',
+      transition: { duration: 0.4, ease: [0.4, 0, 0.2, 1] }
+    }
   };
 
   const currentRooms = getCurrentRooms();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-slate-950 to-gray-950 text-white font-sans">
-      <Navbar path={window.location.pathname} />
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-gray-950 to-slate-950 text-white font-sans relative overflow-hidden">
+      {/* Background Effects */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl"></div>
+      </div>
 
-      <div className="flex flex-col items-center justify-center min-h-screen px-4 pt-24 pb-12">
+      {/* User Profile Section - Top Right */}
+      <div className="absolute top-4 right-4 md:top-6 md:right-6 z-50">
+        {isLoggedIn ? (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="bg-black/40 backdrop-blur-xl border border-white/10 rounded-2xl px-3 py-2 md:px-4 md:py-3 shadow-xl"
+          >
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="flex-1 min-w-0">
+                {isEditingName ? (
+                  <input
+                    type="text"
+                    value={tempName}
+                    onChange={(e) => setTempName(e.target.value)}
+                    onBlur={handleNameEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleNameEdit();
+                      if (e.key === 'Escape') {
+                        setTempName(userName);
+                        setIsEditingName(false);
+                      }
+                    }}
+                    className="bg-transparent border-b border-blue-400 text-xs md:text-sm font-semibold focus:outline-none w-full"
+                    autoFocus
+                  />
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs md:text-sm font-semibold truncate max-w-[120px] md:max-w-[160px]">
+                      {userName}
+                    </span>
+                    <button
+                      onClick={() => setIsEditingName(true)}
+                      className="text-gray-400 hover:text-blue-400 transition flex-shrink-0"
+                    >
+                      <Pencil className="w-3 h-3 md:w-3.5 md:h-3.5" />
+                    </button>
+                  </div>
+                )}
+                <p className="text-[10px] md:text-xs text-gray-400 truncate max-w-[140px] md:max-w-[180px] mt-0.5">
+                  {userEmail}
+                </p>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="bg-red-500/20 hover:bg-red-500/30 text-red-400 p-1.5 md:p-2 rounded-lg transition flex-shrink-0 border border-red-500/20"
+                title="Logout"
+              >
+                <LogOut className="w-3.5 h-3.5 md:w-4 md:h-4" />
+              </button>
+            </div>
+          </motion.div>
+        ) : (
+          <motion.button
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            onClick={handleLogin}
+            className="bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 p-2 md:p-2.5 rounded-xl transition border border-blue-500/20 shadow-xl backdrop-blur-xl"
+            title="Login"
+          >
+            <LogIn className="w-4 h-4 md:w-5 md:h-5" />
+          </motion.button>
+        )}
+      </div>
+
+      {/* Main Content */}
+      <div className="flex flex-col items-center justify-center min-h-screen px-4 py-20 md:py-8 relative z-10">
         <motion.div
           variants={cardVariants}
           animate={view === 'github_select' ? 'large' : (view === 'main' ? 'main' : 'small')}
           className="w-full"
         >
-          <div className="backdrop-blur-xl bg-black/30 rounded-3xl border border-white/10 shadow-2xl p-6 sm:p-8 md:p-10">
+          <div className="backdrop-blur-2xl bg-black/40 rounded-3xl border border-white/10 shadow-2xl p-5 sm:p-7 md:p-9">
             <AnimatePresence mode="wait">
 
-              {/* === 1. MAIN VIEW === */}
+              {/* === MAIN VIEW === */}
               {view === 'main' && (
-                <motion.div key="main" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }} className="text-center">
-                  <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-3 sm:mb-4 bg-gradient-to-r from-blue-300 via-cyan-300 to-blue-300 bg-clip-text text-transparent leading-tight">
+                <motion.div
+                  key="main"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3 }}
+                  className="text-center"
+                >
+                  <motion.h1
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    className="text-2xl sm:text-3xl md:text-4xl font-bold mb-2 sm:mb-3 bg-gradient-to-r from-blue-400 via-cyan-400 to-blue-400 bg-clip-text text-transparent leading-tight"
+                  >
                     Code Together Instantly
-                  </h1>
-                  <p className="text-gray-400 text-base sm:text-lg mb-8 sm:mb-12">
-                    {isLoggedIn ? '' : 'No login required to start '}
-                  </p>
+                  </motion.h1>
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="text-gray-400 text-sm sm:text-base mb-6 sm:mb-8"
+                  >
+                    {isLoggedIn ? 'Create or join a collaborative workspace' : 'No login required to start'}
+                  </motion.p>
 
-                  <div className="space-y-3 sm:space-y-4">
-                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setView('create_details')} className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 sm:space-x-3 transition-all shadow-lg hover:shadow-blue-500/50">
-                      <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
-                      <span>Create {isLoggedIn ? '' : 'Temporary '} Room</span>
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="space-y-3 mb-6"
+                  >
+                    <motion.button
+                      whileHover={{ scale: 1.02, boxShadow: '0 20px 40px rgba(59, 130, 246, 0.3)' }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => setView('create_details')}
+                      className="w-full py-3 sm:py-3.5 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-sm sm:text-base flex items-center justify-center space-x-2 transition-all shadow-lg"
+                    >
+                      <Plus className="w-4 h-4 sm:w-5 sm:h-5" />
+                      <span>Create {isLoggedIn ? '' : 'Temporary '}Room</span>
                     </motion.button>
 
-                    <div className="flex space-x-3">
-                      <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setView('join')} className="flex-1 py-3 px-4 bg-white/5 hover:bg-white/10 rounded-xl font-semibold text-base flex items-center justify-center space-x-2 border border-white/10">
-                        <Users className="w-5 h-5" />
+                    <div className="grid grid-cols-2 gap-3">
+                      <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => setView('join')}
+                        className="py-3 px-4 bg-white/5 hover:bg-white/10 rounded-xl font-semibold text-sm flex items-center justify-center space-x-2 border border-white/10 transition-all"
+                      >
+                        <Users className="w-4 h-4" />
                         <span>Join</span>
                       </motion.button>
-                      <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleSoloCode} className="flex-1 py-3 px-4 bg-white/5 hover:bg-white/10 rounded-xl font-semibold text-base flex items-center justify-center space-x-2 border border-white/10">
-                        <Terminal className="w-5 h-5" />
+                      <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={handleSoloCode}
+                        className="py-3 px-4 bg-white/5 hover:bg-white/10 rounded-xl font-semibold text-sm flex items-center justify-center space-x-2 border border-white/10 transition-all"
+                      >
+                        <Terminal className="w-4 h-4" />
                         <span>Solo</span>
                       </motion.button>
                     </div>
-                  </div>
+                  </motion.div>
 
-                  {/* === RECENT ROOMS SECTION WITH TOGGLE === */}
+                  {/* Horizontal Divider */}
                   {isLoggedIn && (recentJoinedRooms.length > 0 || recentCreatedRooms.length > 0) && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: 10 }} 
-                      animate={{ opacity: 1, y: 0 }} 
-                      transition={{ delay: 0.2 }}
-                      className="mt-8 sm:mt-10"
+                    <motion.div
+                      initial={{ opacity: 0, scaleX: 0 }}
+                      animate={{ opacity: 1, scaleX: 1 }}
+                      transition={{ delay: 0.4, duration: 0.5 }}
+                      className="relative my-6 sm:my-8"
                     >
-                      <div className="flex items-center justify-between mb-3 sm:mb-4">
-                        <h3 className="text-sm sm:text-base font-semibold text-gray-300 flex items-center gap-2">
-                          <Clock className="w-4 h-4 sm:w-5 sm:h-5" />
-                          Recent Rooms
-                        </h3>
+                      <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-white/10"></div>
                       </div>
+                      <div className="relative flex justify-center">
+                        <span className="bg-gradient-to-br from-gray-900 to-gray-950 px-4 text-xs sm:text-sm text-gray-400 font-medium">
+                          Recent Activity
+                        </span>
+                      </div>
+                    </motion.div>
+                  )}
 
-                      {/* SLIDING TOGGLE BUTTON */}
+                  {/* Recent Rooms Section */}
+                  {isLoggedIn && (recentJoinedRooms.length > 0 || recentCreatedRooms.length > 0) && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.5 }}
+                      className="mt-0"
+                    >
+                      {/* Toggle Button */}
                       <div className="mb-4 flex justify-center">
-                        <div className="relative inline-flex bg-white/5 rounded-lg p-1 border border-white/10">
-                          {/* Sliding Background */}
+                        <div className="relative inline-flex bg-white/5 rounded-xl p-1 border border-white/10">
                           <motion.div
-                            className="absolute top-1 bottom-1 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-md"
+                            className="absolute top-1 bottom-1 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-lg shadow-lg"
                             initial={false}
                             animate={{
                               left: roomViewMode === 'joined' ? '4px' : '50%',
                               right: roomViewMode === 'joined' ? '50%' : '4px',
                             }}
-                            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
                           />
-                          
-                          {/* Buttons */}
+
                           <button
                             onClick={() => setRoomViewMode('joined')}
-                            className={`relative z-10 px-4 sm:px-6 py-2 text-xs sm:text-sm font-medium transition-colors rounded-md ${
-                              roomViewMode === 'joined' ? 'text-white' : 'text-gray-400'
-                            }`}
+                            className={`relative z-10 px-4 sm:px-6 py-2 text-xs sm:text-sm font-medium transition-colors rounded-lg ${roomViewMode === 'joined' ? 'text-white' : 'text-gray-400'
+                              }`}
                           >
                             Joined
                           </button>
                           <button
                             onClick={() => setRoomViewMode('created')}
-                            className={`relative z-10 px-4 sm:px-6 py-2 text-xs sm:text-sm font-medium transition-colors rounded-md ${
-                              roomViewMode === 'created' ? 'text-white' : 'text-gray-400'
-                            }`}
+                            className={`relative z-10 px-4 sm:px-6 py-2 text-xs sm:text-sm font-medium transition-colors rounded-lg ${roomViewMode === 'created' ? 'text-white' : 'text-gray-400'
+                              }`}
                           >
                             Created
                           </button>
                         </div>
                       </div>
-                      
-                      {/* ROOMS LIST */}
+
+                      {/* Rooms List */}
                       <AnimatePresence mode="wait">
                         <motion.div
                           key={roomViewMode}
-                          initial={{ opacity: 0, x: roomViewMode === 'joined' ? -20 : 20 }}
+                          initial={{ opacity: 0, x: roomViewMode === 'joined' ? -15 : 15 }}
                           animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: roomViewMode === 'joined' ? 20 : -20 }}
-                          transition={{ duration: 0.2 }}
-                          className="space-y-2"
+                          exit={{ opacity: 0, x: roomViewMode === 'joined' ? 15 : -15 }}
+                          transition={{ duration: 0.25, ease: "easeInOut" }}
+                          className="space-y-2.5"
                         >
                           {currentRooms.length > 0 ? (
                             currentRooms.map((room, idx) => (
@@ -496,13 +694,14 @@ const RoomCreate = () => {
                                 initial={{ opacity: 0, y: 10 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ delay: idx * 0.05 }}
-                                className="flex flex-col sm:flex-row sm:items-center justify-between p-3 sm:p-4 bg-white/5 hover:bg-white/10 rounded-lg sm:rounded-xl border border-white/10 transition-all group"
+                                whileHover={{ scale: 1.01 }}
+                                className="flex flex-col sm:flex-row sm:items-center justify-between p-3 sm:p-4 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 transition-all group backdrop-blur-sm"
                               >
                                 <div className="flex-1 mb-2 sm:mb-0 min-w-0">
                                   <h4 className="font-semibold text-sm sm:text-base text-white truncate">
                                     {room.roomName}
                                   </h4>
-                                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 mt-1">
+                                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs text-gray-400 mt-1">
                                     <span className="flex items-center gap-1">
                                       <User className="w-3 h-3" />
                                       {room.ownerName}
@@ -515,7 +714,7 @@ const RoomCreate = () => {
                                     {room.hasPassword && (
                                       <>
                                         <span>•</span>
-                                        <span className="flex items-center gap-1">
+                                        <span className="flex items-center gap-1 text-yellow-400">
                                           <Lock className="w-3 h-3" />
                                           Protected
                                         </span>
@@ -526,7 +725,7 @@ const RoomCreate = () => {
                                 <motion.button
                                   whileHover={{ scale: 1.05 }}
                                   whileTap={{ scale: 0.95 }}
-                                  onClick={() => handleRecentRoomJoin(room.roomId, room.hasPassword)}
+                                  onClick={() => handleRecentRoomJoin(room.roomCode, room.roomLink, room.roomId, room.hasPassword)}
                                   className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg text-xs sm:text-sm font-medium shadow-md transition-all flex items-center justify-center gap-1.5"
                                 >
                                   <span>Join</span>
@@ -535,9 +734,13 @@ const RoomCreate = () => {
                               </motion.div>
                             ))
                           ) : (
-                            <div className="text-center py-6 text-gray-500 text-sm">
+                            <motion.div
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className="text-center py-8 text-gray-500 text-xs sm:text-sm bg-white/5 rounded-xl border border-white/5"
+                            >
                               No {roomViewMode === 'joined' ? 'joined' : 'created'} rooms yet
-                            </div>
+                            </motion.div>
                           )}
                         </motion.div>
                       </AnimatePresence>
@@ -545,105 +748,226 @@ const RoomCreate = () => {
                   )}
 
                   {isLoggedIn && loadingRecent && (
-                    <div className="mt-8 text-center">
+                    <div className="mt-6 text-center">
                       <Loader2 className="w-5 h-5 animate-spin mx-auto text-gray-500" />
                     </div>
+                  )}
+
+                  {/* Bottom Info Text */}
+                  {!isLoggedIn && (
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.6 }}
+                      className="mt-6 text-center text-gray-500 text-[10px] sm:text-xs"
+                    >
+                      Temporary rooms expire after 24 hours. Login to unlock GitHub sync and permanent storage.
+                    </motion.p>
                   )}
                 </motion.div>
               )}
 
-              {/* === 2. CREATE ROOM: DETAILS (Name & Password) === */}
+              {/* === CREATE ROOM DETAILS === */}
               {view === 'create_details' && (
-                <motion.div key="create_details" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
-                  <h2 className="text-2xl sm:text-3xl font-bold mb-2 sm:mb-3 text-center">Room Details</h2>
-                  <p className="text-gray-500 text-xs sm:text-sm text-center mb-6 sm:mb-8">
-                    Set up your workspace identity
+                <motion.div
+                  key="create_details"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <h2 className="text-xl sm:text-2xl md:text-3xl font-bold mb-2 text-center bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                    Room Details
+                  </h2>
+                  <p className="text-gray-500 text-xs sm:text-sm text-center mb-6">
+                    Configure your workspace
                   </p>
+
                   <div className="space-y-4 mb-6">
                     <div>
-                      <label className="block text-sm font-medium mb-2 text-gray-400">Room Name <span className="text-red-400">*</span></label>
-                      <input type="text" value={roomName} onChange={(e) => setRoomName(e.target.value)} placeholder="e.g., My Awesome Project" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
+                      <label className="block text-xs sm:text-sm font-medium mb-2 text-gray-400">
+                        Room Name <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={roomName}
+                        onChange={(e) => setRoomName(e.target.value)}
+                        placeholder="e.g., My Awesome Project"
+                        className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600"
+                      />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-2 text-gray-400">Password <span className="text-gray-600">(optional)</span></label>
-                      <input type="password" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} placeholder="Protect your room" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
+                      <label className="block text-xs sm:text-sm font-medium mb-2 text-gray-400">
+                        Password <span className="text-gray-600 text-xs">(optional)</span>
+                      </label>
+                      <input
+                        type="password"
+                        value={roomPassword}
+                        onChange={(e) => setRoomPassword(e.target.value)}
+                        placeholder="Protect your room"
+                        className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600"
+                      />
                     </div>
                   </div>
-                  <div className="flex space-x-3">
-                    <button onClick={handleBack} className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10">Back</button>
-                    <button onClick={handleCreateEmptyRoom} disabled={!roomName || loading} className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2">
-                       {loading ? <Loader2 className="animate-spin" /> : <> Next <ArrowRight size={18} /></>}
-                    </button>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleBack}
+                      className="py-2.5 sm:py-3 px-4 sm:px-6 bg-white/5 hover:bg-white/10 rounded-xl font-medium border border-white/10 text-sm sm:text-base transition-all"
+                    >
+                      Back
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleCreateEmptyRoom}
+                      disabled={!roomName || loading}
+                      className="py-2.5 sm:py-3 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 text-sm sm:text-base transition-all"
+                    >
+                      {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>Create</span> <ArrowRight className="w-4 h-4" /></>}
+                    </motion.button>
                   </div>
                 </motion.div>
               )}
 
-
-              {/* === 4. GITHUB SELECT VIEW === */}
+              {/* === GITHUB SELECT VIEW === */}
               {view === 'github_select' && (
-                <motion.div key="github_select" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
+                <motion.div
+                  key="github_select"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3 }}
+                >
                   <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-2xl font-bold flex items-center gap-2"><Github /> Select Repository</h2>
-                    {loading && <span className="text-xs text-blue-400 animate-pulse">{importStatus || "Loading..."}</span>}
+                    <h2 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
+                      <Globe className="w-5 h-5" />
+                      Select Repository
+                    </h2>
+                    {(loading || loadingRepos) && (
+                      <span className="text-xs text-blue-400 animate-pulse">
+                        {importStatus || "Loading..."}
+                      </span>
+                    )}
                   </div>
 
                   {!ghToken ? (
                     <div className="text-center py-10">
-                      <p className="text-gray-400 mb-4">Connect GitHub to access your repositories</p>
-                      <button onClick={loginWithGithub} className="bg-white text-black px-6 py-2 rounded-full font-bold hover:bg-gray-200 transition">
+                      <p className="text-gray-400 mb-2 text-sm">GitHub not connected</p>
+                      <p className="text-gray-500 mb-4 text-xs">Connect to access your repositories</p>
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={handleGithubConnect}
+                        className="bg-white text-black px-6 py-2.5 rounded-xl font-bold hover:bg-gray-200 transition text-sm"
+                      >
                         Connect GitHub
-                      </button>
+                      </motion.button>
                     </div>
                   ) : (
-                    <div className="h-[300px] overflow-y-auto pr-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700">
+                    <div className="h-[280px] sm:h-[320px] overflow-y-auto pr-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700">
                       {repos.map(repo => (
-                        <div key={repo.id} onClick={() => !loading && handleImportRepository(repo)}
-                          className={`p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex justify-between items-center ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <motion.div
+                          key={repo.id}
+                          whileHover={{ scale: 1.01 }}
+                          onClick={() => !loading && handleImportRepository(repo)}
+                          className={`p-3 sm:p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 cursor-pointer transition flex justify-between items-center ${loading ? 'opacity-50 pointer-events-none' : ''}`}
+                        >
                           <div>
-                            <h3 className="font-semibold text-lg">{repo.name}</h3>
-                            <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
-                              {repo.private ? <Lock size={12} /> : <Globe size={12} />}
+                            <h3 className="font-semibold text-sm sm:text-base">{repo.name}</h3>
+                            <div className="flex items-center gap-2 text-[10px] sm:text-xs text-gray-400 mt-1">
+                              {repo.private ? <Lock className="w-3 h-3" /> : <Globe className="w-3 h-3" />}
                               <span>{repo.private ? 'Private' : 'Public'}</span>
                               <span>•</span>
                               <span>{repo.language || 'Plain Text'}</span>
                             </div>
                           </div>
-                          <FolderGit2 className="w-5 h-5 text-gray-500" />
-                        </div>
+                          <FolderGit2 className="w-4 h-4 sm:w-5 sm:h-5 text-gray-500" />
+                        </motion.div>
                       ))}
-                      {repos.length === 0 && !loading && <p className="text-center text-gray-500 mt-10">No repositories found.</p>}
+                      {repos.length === 0 && !loadingRepos && (
+                        <p className="text-center text-gray-500 mt-10 text-sm">No repositories found.</p>
+                      )}
                     </div>
                   )}
 
-                  <button onClick={handleBack} disabled={loading} className="mt-6 w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleBack}
+                    disabled={loading}
+                    className="mt-6 w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl disabled:opacity-50 text-sm sm:text-base transition-all"
+                  >
                     Back
-                  </button>
+                  </motion.button>
                 </motion.div>
               )}
 
               {/* === JOIN VIEW === */}
               {view === 'join' && (
-                <motion.div key="join" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}>
-                  <h2 className="text-2xl sm:text-3xl font-bold mb-6 sm:mb-8 text-center">Join a Room</h2>
+                <motion.div
+                  key="join"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <h2 className="text-xl sm:text-2xl md:text-3xl font-bold mb-6 text-center bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                    Join a Room
+                  </h2>
+
                   <div className="space-y-4 mb-6">
                     <div>
-                      <label className="block text-sm font-medium mb-2 text-gray-400">Room Code</label>
-                      <input type="text" value={roomCode} onChange={(e) => setRoomCode(e.target.value)} placeholder="Enter room code" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
+                      <label className="block text-xs sm:text-sm font-medium mb-2 text-gray-400">Room Code</label>
+                      <input
+                        type="text"
+                        value={roomCode}
+                        onChange={(e) => setRoomCode(e.target.value)}
+                        placeholder="Enter room code"
+                        className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600"
+                      />
                     </div>
                     <AnimatePresence>
                       {showPasswordInput && (
-                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
-                          <label className="block text-sm font-medium mb-2 text-gray-400 mt-3">Room Password</label>
-                          <input type="password" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} placeholder="Enter password" className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                        >
+                          <label className="block text-xs sm:text-sm font-medium mb-2 text-gray-400">Room Password</label>
+                          <input
+                            type="password"
+                            value={roomPassword}
+                            onChange={(e) => setRoomPassword(e.target.value)}
+                            placeholder="Enter password"
+                            className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600"
+                          />
                         </motion.div>
                       )}
                     </AnimatePresence>
                   </div>
-                  <div className="flex space-x-3">
-                    <button onClick={handleBack} disabled={loading} className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10 disabled:opacity-50">Back</button>
-                    <button onClick={handleJoinNext} disabled={!roomCode || loading} className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2">
-                      {loading ? <Loader2 className="animate-spin" /> : <>{showPasswordInput ? 'Join' : 'Next'} <ArrowRight size={18} /></>}
-                    </button>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleBack}
+                      disabled={loading}
+                      className="py-2.5 sm:py-3 px-4 sm:px-6 bg-white/5 hover:bg-white/10 rounded-xl font-medium border border-white/10 disabled:opacity-50 text-sm sm:text-base transition-all"
+                    >
+                      Back
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleJoinNext}
+                      disabled={!roomCode || loading}
+                      className="py-2.5 sm:py-3 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 text-sm sm:text-base transition-all"
+                    >
+                      {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>{showPasswordInput ? 'Join' : 'Next'}</span> <ArrowRight className="w-4 h-4" /></>}
+                    </motion.button>
                   </div>
                 </motion.div>
               )}
@@ -651,20 +975,16 @@ const RoomCreate = () => {
             </AnimatePresence>
           </div>
         </motion.div>
-
-        <p className="absolute bottom-8 text-center text-gray-500 text-xs sm:text-sm max-w-2xl px-4">
-          {isLoggedIn ? '' : ' Temporary rooms expire after 24 hours. Login to unlock GitHub sync, invites, and permanent storage.'}
-        </p>
       </div>
 
-      {/* === PASSWORD MODAL FOR RECENT ROOMS === */}
+      {/* Password Modal */}
       <AnimatePresence>
         {passwordModal.show && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4"
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4"
             onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
           >
             <motion.div
@@ -672,10 +992,10 @@ const RoomCreate = () => {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-gradient-to-br from-gray-900 to-gray-950 rounded-2xl border border-white/10 shadow-2xl p-6 sm:p-8 w-full max-w-md"
+              className="bg-gradient-to-br from-gray-900 to-black rounded-2xl border border-white/10 shadow-2xl p-5 sm:p-6 md:p-8 w-full max-w-md"
             >
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xl sm:text-2xl font-bold text-white">Room Password</h3>
+                <h3 className="text-lg sm:text-xl md:text-2xl font-bold text-white">Room Password</h3>
                 <button
                   onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
                   className="text-gray-400 hover:text-white transition"
@@ -684,7 +1004,7 @@ const RoomCreate = () => {
                 </button>
               </div>
 
-              <p className="text-gray-400 text-sm mb-6">
+              <p className="text-gray-400 text-xs sm:text-sm mb-5">
                 Enter password for <span className="text-blue-400 font-semibold">{passwordModal.roomName}</span>
               </p>
 
@@ -693,7 +1013,7 @@ const RoomCreate = () => {
                 value={passwordModal.password}
                 onChange={(e) => setPasswordModal({ ...passwordModal, password: e.target.value })}
                 placeholder="Enter room password"
-                className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all mb-6 text-white"
+                className="w-full px-4 py-2.5 sm:py-3 bg-black/40 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all mb-5 text-white text-sm sm:text-base placeholder:text-gray-600"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && passwordModal.password) {
                     handlePasswordModalSubmit();
@@ -702,28 +1022,30 @@ const RoomCreate = () => {
                 autoFocus
               />
 
-              <div className="flex space-x-3">
-                <button
+              <div className="grid grid-cols-2 gap-3">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
                   onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
                   disabled={loading}
-                  className="flex-1 py-3 px-6 bg-white/5 hover:bg-white/10 rounded-lg font-medium border border-white/10 transition disabled:opacity-50"
+                  className="py-2.5 sm:py-3 px-4 bg-white/5 hover:bg-white/10 rounded-xl font-medium border border-white/10 transition disabled:opacity-50 text-sm sm:text-base"
                 >
                   Cancel
-                </button>
-                <button
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
                   onClick={handlePasswordModalSubmit}
                   disabled={!passwordModal.password || loading}
-                  className="flex-1 py-3 px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg font-medium shadow-lg disabled:opacity-50 flex justify-center items-center gap-2"
+                  className="py-2.5 sm:py-3 px-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 text-sm sm:text-base"
                 >
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Join <ArrowRight size={16} /></>}
-                </button>
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>Join</span> <ArrowRight className="w-4 h-4" /></>}
+                </motion.button>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
-
-      <div className="mt-auto py-6 px-3"><Footer /></div>
     </div>
   );
 };

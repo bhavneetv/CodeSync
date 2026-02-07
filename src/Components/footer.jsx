@@ -62,23 +62,14 @@ const Footer = () => {
                             <motion.a
                                 whileHover={{ y: -3 }}
                                 whileTap={{ scale: 0.95 }}
-                                href="https://github.com"
+                                href="https://github.com/bhavneetv/codesync"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="w-9 h-9 backdrop-blur-xl bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg flex items-center justify-center transition-all group"
                             >
                                 <Github className="w-4.5 h-4.5 text-gray-400 group-hover:text-white transition-colors" />
                             </motion.a>
-                            <motion.a
-                                whileHover={{ y: -3 }}
-                                whileTap={{ scale: 0.95 }}
-                                href="https://twitter.com"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="w-9 h-9 backdrop-blur-xl bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg flex items-center justify-center transition-all group"
-                            >
-                                <Twitter className="w-4.5 h-4.5 text-gray-400 group-hover:text-white transition-colors" />
-                            </motion.a>
+                          
                             <motion.a
                                 whileHover={{ y: -3 }}
                                 whileTap={{ scale: 0.95 }}
@@ -97,7 +88,7 @@ const Footer = () => {
                 <div className="pt-8 border-t border-white/5">
                     <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                         <p className="text-xs text-gray-600 text-center md:text-left">
-                            Built with <span className="text-blue-400">React</span>, <span className="text-cyan-400">Tailwind CSS</span>, and <span className="text-purple-400">Framer Motion</span>
+                            Built with <span className="text-blue-400">Vite</span>, <span className="text-cyan-400">Tailwind CSS</span>, and <span className="text-purple-400">Framer Motion</span>
                         </p>
                         <p className="text-xs text-gray-600">
                             Made with ❤️ for developers worldwide

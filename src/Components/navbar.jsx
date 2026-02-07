@@ -1,8 +1,9 @@
 import { motion, useScroll, useTransform } from 'framer-motion';
 import { useState, useEffect } from 'react';
 import { Terminal, Home, Zap, Info, Mail, LogIn, LogOut, Menu, X } from 'lucide-react';
-import { isLoggin } from '../function/login/isLoggin';
+import { isLoggin, isAnyLogin } from '../function/login/isLoggin';
 import { logout } from '../function/login/auth';
+import { set } from 'lodash';
 
 export default function Navbar(props) {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -11,15 +12,18 @@ export default function Navbar(props) {
     const [isCompact, setIsCompact] = useState(false);
     const [Logined, setLogined] = useState(false);
 
-    // Check login status on mount
-    useEffect(() => {
-        (async () => {
-            const loggedIn = await isLoggin();
-            if (loggedIn) {
-                setLogined(true);
-            }
-        })();
-    }, []);
+
+    useEffect
+        (() => {
+            checkAnyLogin();
+        }, [])
+    const checkAnyLogin = async () => {
+        const loggedIn = await isAnyLogin();
+
+        setLogined(loggedIn);
+    }
+
+
 
     const handleAuthButtonClick = async () => {
         if (Logined) {
@@ -106,7 +110,7 @@ export default function Navbar(props) {
                                         <Terminal className="w-4 h-4 text-white" strokeWidth={2.5} />
                                     </div>
                                     <span className="text-base sm:text-lg font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent whitespace-nowrap">
-                                        CodeSync
+                                        Code Sync
                                     </span>
                                 </motion.div>
 
@@ -201,41 +205,41 @@ export default function Navbar(props) {
                     className="fixed inset-0 z-40 md:hidden bg-black/95 backdrop-blur-2xl pt-24"
                 >
                     <div className="flex flex-col items-center space-y-8 p-8">
-                        <a 
-                            href="#home" 
-                            onClick={() => setMobileMenuOpen(false)} 
+                        <a
+                            href="#home"
+                            onClick={() => setMobileMenuOpen(false)}
                             className="text-xl text-gray-300 hover:text-white transition-colors py-3 flex items-center space-x-3 w-full max-w-xs justify-center hover:bg-white/5 rounded-lg"
                         >
                             <Home className="w-5 h-5" />
                             <span>Home</span>
                         </a>
-                        <a 
-                            href="#features" 
-                            onClick={() => setMobileMenuOpen(false)} 
+                        <a
+                            href="#features"
+                            onClick={() => setMobileMenuOpen(false)}
                             className="text-xl text-gray-300 hover:text-white transition-colors py-3 flex items-center space-x-3 w-full max-w-xs justify-center hover:bg-white/5 rounded-lg"
                         >
                             <Zap className="w-5 h-5" />
                             <span>Features</span>
                         </a>
-                        <a 
-                            href="#how-it-works" 
-                            onClick={() => setMobileMenuOpen(false)} 
+                        <a
+                            href="#how-it-works"
+                            onClick={() => setMobileMenuOpen(false)}
                             className="text-xl text-gray-300 hover:text-white transition-colors py-3 flex items-center space-x-3 w-full max-w-xs justify-center hover:bg-white/5 rounded-lg"
                         >
                             <Info className="w-5 h-5" />
                             <span>About</span>
                         </a>
-                        <a 
-                            href="#contact" 
-                            onClick={() => setMobileMenuOpen(false)} 
+                        <a
+                            href="#contact"
+                            onClick={() => setMobileMenuOpen(false)}
                             className="text-xl text-gray-300 hover:text-white transition-colors py-3 flex items-center space-x-3 w-full max-w-xs justify-center hover:bg-white/5 rounded-lg"
                         >
                             <Mail className="w-5 h-5" />
                             <span>Contact</span>
                         </a>
-                        
+
                         {/* Mobile Login/Logout Button */}
-                        <button 
+                        <button
                             onClick={() => {
                                 handleAuthButtonClick();
                                 setMobileMenuOpen(false);

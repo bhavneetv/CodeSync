@@ -83,6 +83,16 @@ export async function createEncryptedFile(
             console.error("DB error:", dbError);
             throw dbError;
         }
+        if (is_new) {
+
+            const { data: newFileData, error: newFileError } = await supabase
+                .from("rooms")
+                .update({
+                    is_room_new: false
+                })
+                .eq("room_link", roomCode);
+
+        }
 
         // console.log("[Create] File created successfully:", storagePath);
 
@@ -609,7 +619,7 @@ export async function deleteFolder(
 
         if (storageError) throw storageError;
 
-        
+
         const { error: dbError } = await supabase
             .from("files")
             .delete()

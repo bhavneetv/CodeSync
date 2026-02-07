@@ -40,14 +40,63 @@ export async function loginWithGoogle() {
 }
 
 /* GITHUB LOGIN */
-export async function loginWithGithub() {
+export async function loginWithGithub(redirectPath = "/") {
+  const redirectTo = redirectPath.startsWith("/")
+    ? window.location.origin + redirectPath
+    : window.location.origin + "/" + redirectPath;
   return await supabase.auth.signInWithOAuth({
     provider: "github",
     options: {
       scopes: "repo",
-      redirectTo: window.location.origin + "/",
+      redirectTo,
     },
   });
+}
+
+// Use root redirect with query param to avoid provider redirect restrictions
+export async function loginWithGithubReturn(returnPath = "/") {
+  const safePath = returnPath.startsWith("/") ? returnPath : `/${returnPath}`;
+  const redirectTo = `${window.location.origin}/?oauth_return=${encodeURIComponent(safePath)}`;
+  return await supabase.auth.signInWithOAuth({
+    provider: "github",
+    options: {
+      scopes: "repo",
+      redirectTo,
+    },
+  });
+}
+
+/* SYNC GITHUB TOKEN TO PROFILE (after OAuth redirect) */
+export async function syncGithubTokenToProfile() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return { updated: false, token: null };
+
+  const session = data?.session;
+  const user = session?.user;
+  const providerToken = session?.provider_token || null;
+
+  if (!user) return { updated: false, token: null };
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("github_token")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (profile?.github_token) {
+    return { updated: false, token: profile.github_token };
+  }
+
+  if (!providerToken) {
+    return { updated: false, token: null };
+  }
+
+  const { error: updateError } = await supabase
+    .from("profiles")
+    .update({ github_token: providerToken })
+    .eq("id", user.id);
+
+  return { updated: !updateError, token: providerToken };
 }
 
 /* LOGOUT */

@@ -24,27 +24,43 @@ const LandingPage = () => {
     message: ''
   });
 
-  // Scroll handler for navbar
   useEffect(() => {
-    const handleScroll = () => {
-      const currentScrollY = window.scrollY;
+    const params = new URLSearchParams(window.location.search);
+    const oauthReturn = params.get("oauth_return");
 
-      if (currentScrollY < 50) {
-        setIsCompact(false);
-      } else {
-        if (currentScrollY > lastScrollY) {
-          setIsCompact(true);
-        } else {
-          setIsCompact(false);
+    let target = null;
+    if (oauthReturn) {
+      target = oauthReturn.startsWith("/") ? oauthReturn : `/${oauthReturn}`;
+    } else {
+      const redirectRaw =
+        sessionStorage.getItem("github_oauth_return") ||
+        localStorage.getItem("github_oauth_return");
+      if (redirectRaw) {
+        try {
+          const redirect = JSON.parse(redirectRaw);
+          if (redirect?.path) {
+            const ageMs = redirect?.ts ? Date.now() - redirect.ts : 0;
+            if (!redirect.ts || ageMs < 5 * 60 * 1000) {
+              target = redirect.path;
+            } else {
+              sessionStorage.removeItem("github_oauth_return");
+              localStorage.removeItem("github_oauth_return");
+            }
+          }
+        } catch (e) {
+          sessionStorage.removeItem("github_oauth_return");
+          localStorage.removeItem("github_oauth_return");
         }
       }
+    }
 
-      setLastScrollY(currentScrollY);
-    };
+    if (target && window.location.pathname === "/") {
+      window.location.replace(target);
+    }
+  }, []);
 
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [lastScrollY]);
+  // Scroll handler for navbar
+  
 
   // Enhanced Realistic Typing Animation Component with Multiple Cursors
   const RealisticTypingCode = () => {
@@ -283,15 +299,7 @@ const LandingPage = () => {
     });
   };
 
-  const handleAuthClick = () => {
-    if (isLoggedIn) {
-      console.log('Logout clicked');
-      setIsLoggedIn(false);
-    } else {
-      console.log('Login clicked');
-      window.location.href = '/login';
-    }
-  };
+
 
   // Enhanced Features data with icons
   const features = [
@@ -360,6 +368,9 @@ const LandingPage = () => {
       gradient: 'from-purple-500 to-pink-500'
     }
   ];
+  function handlePage() {
+    window.location.href = '/create-room';
+  }
 
   // Quick actions
   const quickActions = [
@@ -367,21 +378,21 @@ const LandingPage = () => {
       icon: <Plus className="w-8 h-8 sm:w-10 h-10 text-white" />,
       title: 'Create Room',
       description: 'Start a new coding session',
-      action: () => console.log('Create Room'),
+      action: handlePage,
       gradient: 'from-blue-500 to-cyan-500'
     },
     {
       icon: <UserPlus className="w-8 h-8 sm:w-10 h-10 text-white" />,
       title: 'Join Room',
       description: 'Enter an existing room',
-      action: () => console.log('Join Room'),
+      action: () => handlePage(),
       gradient: 'from-purple-500 to-pink-500'
     },
     {
       icon: <Terminal className="w-8 h-8 sm:w-10 h-10 text-white" />,
       title: 'Solo Code',
       description: 'Code by yourself',
-      action: () => console.log('Solo Code'),
+      action: () => handlePage(),
       gradient: 'from-emerald-500 to-teal-500'
     }
   ];
@@ -398,7 +409,7 @@ const LandingPage = () => {
       name: 'macOS',
       icon: <Monitor className="w-8 h-8 text-white" />,
       gradient: 'from-gray-600 to-gray-800',
-      available: true
+      available: false
     },
     {
       name: 'iOS',
@@ -524,7 +535,7 @@ const LandingPage = () => {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => console.log('Create Room')}
+                onClick={() => handlePage()}
                 className="px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 shadow-lg shadow-blue-500/50 transition-all"
               >
                 <Plus className="w-5 h-5 sm:w-6 h-6" />
@@ -533,7 +544,7 @@ const LandingPage = () => {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => console.log('Solo Code')}
+                onClick={() => handlePage()}
                 className="px-6 sm:px-8 py-3 sm:py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 transition-all"
               >
                 <Terminal className="w-5 h-5 sm:w-6 h-6" />
@@ -728,11 +739,11 @@ const LandingPage = () => {
                   { name: 'C', icon: 'C', color: 'from-blue-600 to-indigo-600' },
                   { name: 'C++', icon: 'C++', color: 'from-blue-500 to-purple-600' },
                   { name: 'Ruby', icon: 'RB', color: 'from-red-600 to-pink-600' },
-                  { name: 'PHP', icon: 'PHP', color: 'from-indigo-500 to-purple-600' },
+                  // { name: 'PHP', icon: 'PHP', color: 'from-indigo-500 to-purple-600' },
                   { name: 'Go', icon: 'GO', color: 'from-cyan-400 to-blue-500' },
                   { name: 'Rust', icon: 'RS', color: 'from-orange-600 to-red-700' },
-                  { name: 'Swift', icon: 'SW', color: 'from-orange-500 to-red-500' },
-                  { name: 'Kotlin', icon: 'KT', color: 'from-purple-500 to-pink-500' },
+                  // { name: 'Swift', icon: 'SW', color: 'from-orange-500 to-red-500' },
+                  // { name: 'Kotlin', icon: 'KT', color: 'from-purple-500 to-pink-500' },
                   { name: 'Prolog', icon: 'PL', color: 'from-teal-500 to-cyan-600' },
                   { name: 'R', icon: 'R', color: 'from-blue-500 to-cyan-500' },
                 ].map((lang, index) => (
@@ -758,11 +769,11 @@ const LandingPage = () => {
                   { name: 'C', icon: 'C', color: 'from-blue-600 to-indigo-600' },
                   { name: 'C++', icon: 'C++', color: 'from-blue-500 to-purple-600' },
                   { name: 'Ruby', icon: 'RB', color: 'from-red-600 to-pink-600' },
-                  { name: 'PHP', icon: 'PHP', color: 'from-indigo-500 to-purple-600' },
+                  // { name: 'PHP', icon: 'PHP', color: 'from-indigo-500 to-purple-600' },
                   { name: 'Go', icon: 'GO', color: 'from-cyan-400 to-blue-500' },
                   { name: 'Rust', icon: 'RS', color: 'from-orange-600 to-red-700' },
-                  { name: 'Swift', icon: 'SW', color: 'from-orange-500 to-red-500' },
-                  { name: 'Kotlin', icon: 'KT', color: 'from-purple-500 to-pink-500' },
+                  // { name: 'Swift', icon: 'SW', color: 'from-orange-500 to-red-500' },
+                  // { name: 'Kotlin', icon: 'KT', color: 'from-purple-500 to-pink-500' },
                   { name: 'Prolog', icon: 'PL', color: 'from-teal-500 to-cyan-600' },
                   { name: 'R', icon: 'R', color: 'from-blue-500 to-cyan-500' },
                 ].map((lang, index) => (
@@ -790,7 +801,7 @@ const LandingPage = () => {
             <div className="inline-flex items-center space-x-2 backdrop-blur-xl bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/20 rounded-full px-6 py-3">
               <Check className="w-5 h-5 text-emerald-400" />
               <span className="text-sm sm:text-base text-gray-300">
-                <span className="font-bold text-white">16+</span> Programming Languages Supported
+                <span className="font-bold text-white">12+</span> Programming Languages Supported
               </span>
             </div>
           </motion.div>
@@ -1148,7 +1159,7 @@ const LandingPage = () => {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => console.log('Create First Room')}
+              onClick={() => handlePage()}
               className="px-8 sm:px-10 py-3.5 sm:py-5 bg-gradient-to-r from-blue-500 via-cyan-500 to-emerald-500 hover:from-blue-600 hover:via-cyan-600 hover:to-emerald-600 rounded-xl font-semibold text-base sm:text-lg lg:text-xl flex items-center justify-center space-x-2 sm:space-x-3 shadow-lg shadow-blue-500/50 transition-all mx-auto"
             >
               <Plus className="w-5 h-5 sm:w-6 lg:w-7 h-6 lg:h-7" />

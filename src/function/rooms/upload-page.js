@@ -6,11 +6,10 @@ import { isLoggin } from "../login/isLoggin";
 export async function findRoomname(roomLink) {
     const { data, error } = await supabase
         .from("rooms")
-        .select("*")
+        .select("room_name, room_code, type, is_room_new")
         .eq("room_link", roomLink)
         .eq("type", "permanent")
-        .eq("is_room_new", true)
-        .eq("owner_id", await isLoggin("id") ?? null)
+         .eq("owner_id", await isLoggin("id") ?? null)
         .maybeSingle();
     if (error) return null;
     return data ?? null;

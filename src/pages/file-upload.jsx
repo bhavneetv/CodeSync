@@ -76,24 +76,26 @@ const FileUploadpage = () => {
   }, []);
   //get room info and validate room link from URL
   const roomLink = new URLSearchParams(window.location.search).get('roomId');
+  const token = new URLSearchParams(window.location.search).get('token');
   // console.log(roomLink);
 
   // fetch room info like name and code
 
   const fetch = async () => {
+    
     const roomInfo = await findRoomname(roomLink);
-    // console.log(roomInfo);
-    if (!roomInfo) {
+    
+    if (!roomInfo || roomInfo.type !== 'permanent') {
       window.location.href = '/create-room';
       return false;
     }
-    if (roomInfo.type !== 'permanent') {
-      window.location.href = '/create-room';
-      return null;
-    }
-    if (!roomInfo.is_room_new) {
-      window.location.href = `/editor?roomId=${roomLink}`;
-      return null;
+  
+    
+    if (roomInfo.is_room_new == false) {
+      console.log(roomInfo.is_room_new);
+
+      // window.location.href = `/editor?roomId=${roomLink}&token=${token}`;
+      // return null;
     }
     setroomName(roomInfo.room_name);
     setRoomCode(roomInfo.room_code);
@@ -124,18 +126,15 @@ const FileUploadpage = () => {
 
   const handleCreateFile = async () => {
     const extension = selectedFileType === 'custom' ? customExtension : selectedFileType;
-    console.log({
-      fileName,
-      extension,
-      roomCode
-    });
+
+
     setLoading(true);
     createEncryptedFile(roomLink, fileName, extension, true).then((res) => {
       setLoading(false);
-      console.log(res)
-      // if (res.success == true) {
-      //   window.location.href = `/editor?roomId=${roomLink}`;
-      // }
+
+      if (res.success == true) {
+        window.location.href = `/editor?roomId=${roomLink}&token=${token}`;
+      }
     });
 
 

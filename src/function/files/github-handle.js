@@ -9,8 +9,30 @@ export async function getGithubToken() {
     const { data, error } = await supabase.auth.getSession();
     if (error) return null;
 
-    // Supabase GitHub OAuth token
-    return data.session?.provider_token || null;
+    const session = data?.session;
+    const user = session?.user;
+    if (!user) return null;
+
+    const { data: profile } = await supabase
+        .from("profiles")
+        .select("github_token")
+        .eq("id", user.id)
+        .maybeSingle();
+
+    if (profile?.github_token) {
+        return profile.github_token;
+    }
+
+    const providerToken = session?.provider_token || null;
+
+    if (providerToken) {
+        await supabase
+            .from("profiles")
+            .update({ github_token: providerToken })
+            .eq("id", user.id);
+    }
+
+    return providerToken;
 }
 
 /* ================================
