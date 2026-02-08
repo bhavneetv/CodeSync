@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import Navbar from '../Components/navbar';
 import Footer from '../Components/footer';
+import { showToast } from '../Components/toast-notification.jsx';
+import { runAutoRoomMaintenance } from '../function/rooms/room-functions.js';
 
 const LandingPage = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -25,38 +27,36 @@ const LandingPage = () => {
   });
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const oauthReturn = params.get("oauth_return");
+    if(sessionStorage.getItem("github_oauth_state")) {
+      const sess = sessionStorage.getItem("github_oauth_state");
+      const sessObj = JSON.parse(sess);
+      window.location.href = `/upload?roomId=${sessObj.roomId}&token=${sessObj.token}&view=${sessObj.view}`;
+      
+    }
 
-    let target = null;
-    if (oauthReturn) {
-      target = oauthReturn.startsWith("/") ? oauthReturn : `/${oauthReturn}`;
-    } else {
-      const redirectRaw =
-        sessionStorage.getItem("github_oauth_return") ||
-        localStorage.getItem("github_oauth_return");
-      if (redirectRaw) {
-        try {
-          const redirect = JSON.parse(redirectRaw);
-          if (redirect?.path) {
-            const ageMs = redirect?.ts ? Date.now() - redirect.ts : 0;
-            if (!redirect.ts || ageMs < 5 * 60 * 1000) {
-              target = redirect.path;
-            } else {
-              sessionStorage.removeItem("github_oauth_return");
-              localStorage.removeItem("github_oauth_return");
-            }
-          }
-        } catch (e) {
-          sessionStorage.removeItem("github_oauth_return");
-          localStorage.removeItem("github_oauth_return");
+    const runMaintenanceOnLanding = async () => {
+      try {
+        const lastRunRaw = localStorage.getItem('room_cleanup_last_run_at');
+        const lastRun = lastRunRaw ? Number(lastRunRaw) : 0;
+        const now = Date.now();
+        const intervalMs = 30 * 60 * 1000; // 30 min throttle
+
+        if (now - lastRun < intervalMs) {
+          return;
         }
-      }
-    }
 
-    if (target && window.location.pathname === "/") {
-      window.location.replace(target);
-    }
+        await runAutoRoomMaintenance();
+        localStorage.setItem('room_cleanup_last_run_at', String(now));
+      } catch (err) {
+        console.error('Auto room maintenance failed:', err);
+      }
+    };
+
+    runMaintenanceOnLanding();
+   
+   
+
+   
   }, []);
 
   // Scroll handler for navbar
@@ -288,7 +288,7 @@ const LandingPage = () => {
   const handleFormSubmit = (e) => {
     e.preventDefault();
     console.log('Contact Form Submitted:', formData);
-    alert('Message sent! (Check console)');
+    showToast('Message sent! (Check console)', 'success', 1800);
     setFormData({ name: '', email: '', message: '' });
   };
 

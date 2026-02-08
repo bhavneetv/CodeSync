@@ -2,6 +2,8 @@ import { enc } from "crypto-js";
 import { get } from "lodash";
 import supabase from "../../supabaseClient";
 import { encrypt, hashRoomCode, decrypt } from "../login/encryption";
+import { showToast } from "../../Components/toast-notification";
+import { s } from "framer-motion/client";
 
 
 function generateUUID() {
@@ -57,6 +59,7 @@ export async function createEncryptedFile(
 
         if (uploadError) {
             console.error("Upload error:", uploadError);
+            showToast("Failed to create file. Please try again.", "error" , 2000);
             throw uploadError;
         }
 
@@ -113,8 +116,7 @@ export async function createEncryptedFile(
 // Update existing file (simplified version)
 export async function updateEncryptedFile(storagePath, rawContent) {
     try {
-        // console.log("[Update] Starting update for:", storagePath);
-        // console.log("[Update] Content length:", rawContent?.length || 0);
+        
 
         // Encrypt the content
         const encryptedContent = encrypt(rawContent || "");
@@ -138,7 +140,8 @@ export async function updateEncryptedFile(storagePath, rawContent) {
             throw new Error(`Failed to update file: ${uploadError.message}`);
         }
 
-        console.log("[Update] File updated successfully:", storagePath);
+        // console.log("[Update] File updated successfully:", storagePath);
+        
 
         // Verify the update (optional but recommended)
         const { data: verifyData, error: verifyError } = await supabase
@@ -150,16 +153,13 @@ export async function updateEncryptedFile(storagePath, rawContent) {
             console.warn("[Update] Could not verify update:", verifyError);
         } else {
             const verifiedContent = decrypt(await verifyData.text());
-            console.log("[Update] Verified content length:", verifiedContent?.length || 0);
-
-            // Check if content matches
-            if (verifiedContent !== rawContent) {
-                console.warn("[Update] Content mismatch after save!");
-            }
+          
+           
         }
 
         return { success: true };
     } catch (error) {
+        showToast("Failed to update file. Please try again.", "error" , 2000);
         console.error("[Update] Update failed:", error);
         return { success: false, error: error.message };
     }
@@ -168,7 +168,7 @@ export async function updateEncryptedFile(storagePath, rawContent) {
 // Alternative update method using direct replacement (more reliable)
 export async function updateEncryptedFileReliable(storagePath, rawContent) {
     try {
-        console.log("[UpdateReliable] Starting update for:", storagePath);
+        // console.log("[UpdateReliable] Starting update for:", storagePath);
 
         const encryptedContent = encrypt(rawContent || "");
         const blob = new Blob([encryptedContent], {
@@ -200,8 +200,7 @@ export async function updateEncryptedFileReliable(storagePath, rawContent) {
             console.error("[UpdateReliable] Upload error:", uploadError);
             throw new Error(`Failed to upload file: ${uploadError.message}`);
         }
-
-        console.log("[UpdateReliable] File updated successfully");
+        
 
         return { success: true };
     } catch (error) {
@@ -238,10 +237,12 @@ export async function deleteEncryptedFile(fileId, storagePath) {
             throw dbError;
         }
 
-        console.log("[Delete] File deleted successfully:", storagePath);
+        // console.log("[Delete] File deleted successfully:", storagePath);
+        showToast("File deleted successfully.", "success" , 2000);
 
         return { success: true };
     } catch (error) {
+        showToast("Failed to delete file. Please try again.", "error" , 2000);
         console.error("[Delete] Delete failed:", error);
         return { success: false, error: error.message };
     }
@@ -268,11 +269,13 @@ export async function renameEncryptedFile(fileId, newFileName, newExtension) {
             throw dbError;
         }
 
-        console.log("[Rename] File renamed successfully");
+        // console.log("[Rename] File renamed successfully");
+        showToast("File renamed successfully.", "success" , 1500);
 
         return { success: true };
     } catch (error) {
         console.error("[Rename] Rename failed:", error);
+            showToast("Failed to rename file. Please try again.", "error" , 2000);
         return { success: false, error: error.message };
     }
 }
@@ -283,6 +286,7 @@ async function getRoomCode(roomLink) {
         .from("rooms")
         .select("room_code")
         .eq("room_link", roomLink)
+        .eq("active", true)
         .single();
 
     if (error) {
@@ -431,6 +435,7 @@ export async function readEncryptedFile(storagePath) {
         return decrypted;
     } catch (error) {
         console.error("[Read] Read failed:", error);
+
         throw error;
     }
 }

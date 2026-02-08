@@ -594,7 +594,7 @@ export default function MainCodeEditorPage() {
 
 // ─── File tree (recursive) ────────────────────────────────────────────────
 function FileTree({ node, path, activeFile, onToggle, onOpenFile, onRename, onDelete, onCreateFile }) {
-  const isActive = activeFile?.id === node.id;
+  const isActive = activeFile?.id != null && node?.id != null && activeFile.id === node.id;
 
   if (node.type === 'folder') {
     return (

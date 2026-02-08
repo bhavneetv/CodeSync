@@ -1,6 +1,7 @@
 import { set } from 'lodash';
 import supabase from '../../supabaseClient';
 import { createEncryptedFile } from './create-file';
+import { showToast } from '../../Components/toast-notification';
 
 /* ================================
    1. Get GitHub token of logged user
@@ -19,20 +20,22 @@ export async function getGithubToken() {
         .eq("id", user.id)
         .maybeSingle();
 
+    const providerToken = session?.provider_token || null;
+    if (providerToken) {
+        if (profile?.github_token !== providerToken) {
+            await supabase
+                .from("profiles")
+                .update({ github_token: providerToken })
+                .eq("id", user.id);
+        }
+        return providerToken;
+    }
+
     if (profile?.github_token) {
         return profile.github_token;
     }
 
-    const providerToken = session?.provider_token || null;
-
-    if (providerToken) {
-        await supabase
-            .from("profiles")
-            .update({ github_token: providerToken })
-            .eq("id", user.id);
-    }
-
-    return providerToken;
+    return null;
 }
 
 /* ================================
@@ -50,21 +53,42 @@ export async function fetchAllGithubRepos() {
             `https://api.github.com/user/repos?per_page=100&page=${page}&sort=updated`,
             {
                 headers: {
-                    Authorization: `Bearer ${token}`,
+                    Authorization: `token ${token}`,
                     Accept: 'application/vnd.github+json'
                 }
             }
         );
+
+        if (res.status === 401 || res.status === 403) {
+            const { data } = await supabase.auth.getSession();
+            const user = data?.session?.user;
+            if (user?.id) {
+                await supabase
+                    .from("profiles")
+                    .update({ github_token: null })
+                    .eq("id", user.id);
+            }
+            throw new Error("GITHUB_UNAUTHORIZED");
+        }
+
+        if (!res.ok) {
+            throw new Error(`GITHUB_API_ERROR_${res.status}`);
+        }
 
         const repos = await res.json();
         if (!Array.isArray(repos) || repos.length === 0) break;
 
         allRepos.push(
             ...repos.map(repo => ({
+                id: repo.id,
                 name: repo.name,
-                owner: repo.owner.login,
+                full_name: repo.full_name,
+                owner: repo.owner?.login,
                 private: repo.private,
-                default_branch: repo.default_branch
+                default_branch: repo.default_branch,
+                stargazers_count: repo.stargazers_count,
+                language: repo.language,
+                updated_at: repo.updated_at
             }))
         );
 
@@ -186,23 +210,26 @@ export async function importRepoContents({
 }
 
 export async function setRoomDetail(roomLink, repo, token) {
-    console.log("setRoomDetail", roomLink, repo, token);
+
     const { data, error } = await supabase
         .from('rooms')
         .update({
             github_repo: repo,
             github_token: token,
-            file_upload_by: "github"
+            file_upload_by: "github",
+            is_room_new: false
         })
         .eq('room_link', roomLink)
-        .select(); // 👈 NO single()
+        .select();
 
     if (error) {
-        console.error("Failed to update room GitHub details:", error);
+        showToast("Failed to set room details", "error");
+        console.error("Error setting room details:", error);
         return { success: false, error };
     }
 
     if (!data || data.length === 0) {
+        showToast("Room not found or no permission", "error");
         console.error("No room matched room_link:", roomLink);
         return { success: false, error: "ROOM_NOT_FOUND_OR_NO_PERMISSION" };
     }

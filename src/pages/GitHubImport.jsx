@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import  supabase from '../supabaseClient'; 
+import { showToast } from '../Components/toast-notification.jsx';
 
 const GitHubImport = ({ roomId }) => { // Pass the current Room ID as a prop
   const [repos, setRepos] = useState([]);
@@ -79,12 +80,12 @@ const GitHubImport = ({ roomId }) => { // Pass the current Room ID as a prop
 
       if (error) throw error;
 
-      alert("Repository Imported Successfully!");
+      showToast("Repository imported successfully!", "success", 2000);
       setStatus("");
       
     } catch (error) {
       console.error(error);
-      alert("Import Failed: " + error.message);
+      showToast("Import failed: " + error.message, "error", 2500);
     } finally {
       setLoading(false);
     }

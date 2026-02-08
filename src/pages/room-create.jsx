@@ -44,6 +44,8 @@ const RoomCreate = () => {
   const [passwordModal, setPasswordModal] = useState({
     show: false,
     roomId: null,
+    roomCode: '',
+    roomLink: '',
     roomName: '',
     password: ''
   });
@@ -210,7 +212,8 @@ const RoomCreate = () => {
         const { data: roomsData, error: roomsError } = await supabase
           .from("rooms")
           .select("id, room_name, owner_id, room_password , room_link, room_code")
-          .in("id", roomIds);
+          .in("id", roomIds)
+          .eq("active", true);
 
         if (roomsError) throw roomsError;
 
@@ -230,6 +233,10 @@ const RoomCreate = () => {
           const isOwner = room.owner_id === userId;
           const ownerProfile = profilesData?.find(p => p.id === room.owner_id);
 
+          const hasPassword = typeof room.room_password === "string"
+            ? room.room_password.trim().length > 0
+            : !!room.room_password;
+
           return {
             roomId: room.id,
             roomCode: room.room_code,
@@ -237,7 +244,7 @@ const RoomCreate = () => {
             roomName: room.room_name || "Unnamed Room",
             joinedAt: member.joined_at,
             ownerName: isOwner ? "You" : (ownerProfile?.name || "Owner"),
-            hasPassword: room.room_password !== null
+            hasPassword
           };
         }).filter(Boolean);
 
@@ -252,20 +259,29 @@ const RoomCreate = () => {
       // =========================
       const { data: createdRoomsData, error: createdError } = await supabase
         .from("rooms")
-        .select("id, room_name, created_at, room_password , room_link")
+        .select("id, room_name, created_at, room_password , room_link, room_code")
         .eq("owner_id", userId)
+        .eq("active", true)
         .order("created_at", { ascending: false })
         .limit(3);
 
       if (createdError) throw createdError;
 
-      const createdRooms = createdRoomsData.map(room => ({
-        roomId: room.i,
+      const createdRooms = createdRoomsData.map(room => {
+        const hasPassword = typeof room.room_password === "string"
+          ? room.room_password.trim().length > 0
+          : !!room.room_password;
+
+        return ({
+        roomId: room.id,
+        roomCode: room.room_code,
+        roomLink: room.room_link,
         roomName: room.room_name || "Unnamed Room",
         joinedAt: room.created_at,
         ownerName: "You",
-        hasPassword: room.room_password !== null
-      }));
+        hasPassword
+      });
+      });
 
       setRecentCreatedRooms(createdRooms);
 
@@ -297,6 +313,8 @@ const RoomCreate = () => {
 
       if (res?.status === "joined") {
         window.location.href = "/editor?roomId=" + roomLink + "&token=" + res.token;
+      } else if (res?.status === "kicked") {
+        showToast("You have been removed from this room.", "error", 1500);
       } else {
         showToast("Failed to join room. Please try again.", "error", 1200);
 
@@ -317,8 +335,14 @@ const RoomCreate = () => {
     if (res.status === "wrong_password") {
       showToast("Incorrect password.", "error", 1200);
       setLoading(false);
+    } else if (res.status === "not_found") {
+      showToast("Room not found or inactive.", "error", 1200);
+      setLoading(false);
+    } else if (res.status === "kicked") {
+      showToast("You have been removed from this room.", "error", 1500);
+      setLoading(false);
     } else if (res.status === "joined") {
-      setPasswordModal({ show: false, roomId: null, roomName: '', password: '', roomCode: '' });
+      setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' });
       window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
     } else {
       showToast("Failed to join room.", "error", 1200);
@@ -354,7 +378,9 @@ const RoomCreate = () => {
   const handleCreateEmptyRoom = async () => {
     setLoading(true);
     try {
-      const result = await createRoom(roomName.trim(), roomPassword);
+      const trimmedPassword = (roomPassword || "").trim();
+      const passwordToSave = trimmedPassword.length > 0 ? trimmedPassword : null;
+      const result = await createRoom(roomName.trim(), passwordToSave);
       setLoading(false);
 
       if (!result.success) return;
@@ -377,7 +403,9 @@ const RoomCreate = () => {
       if (res.status === "need_password") {
         setShowPasswordInput(true);
       } else if (res.status === "not_found") {
-        alert("Room not found.");
+        showToast("Room not found or inactive.", "error", 1200);
+      } else if (res.status === "kicked") {
+        showToast("You have been removed from this room.", "error", 1500);
       } else if (res.status === "joined") {
         window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
       }
@@ -386,7 +414,13 @@ const RoomCreate = () => {
       const res = await handleRoomJoin(roomCode, roomPassword, true);
 
       if (res.status === "wrong_password") {
-        alert("Incorrect password.");
+        showToast("Incorrect password.", "error", 1200);
+        setLoading(false);
+      } else if (res.status === "not_found") {
+        showToast("Room not found or inactive.", "error", 1200);
+        setLoading(false);
+      } else if (res.status === "kicked") {
+        showToast("You have been removed from this room.", "error", 1500);
         setLoading(false);
       } else if (res.status === "joined") {
         window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
@@ -396,8 +430,8 @@ const RoomCreate = () => {
 
   const handleSoloCode = () => {
     setLoading(true);
-    createRoom('Solo Room').then((result) => {
-      window.location.href = `/editor?roomId=${result.roomLink}`;
+    createRoom('Solo Room' , null , true).then((result) => {
+      window.location.href = `/editor?roomId=${result.roomId}&token=${result.token}`;
     });
   };
 
@@ -985,7 +1019,7 @@ const RoomCreate = () => {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4"
-            onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
+            onClick={() => setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' })}
           >
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
@@ -997,7 +1031,7 @@ const RoomCreate = () => {
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg sm:text-xl md:text-2xl font-bold text-white">Room Password</h3>
                 <button
-                  onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
+                  onClick={() => setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' })}
                   className="text-gray-400 hover:text-white transition"
                 >
                   <X className="w-5 h-5" />

@@ -8,6 +8,7 @@ export async function findRoomname(roomLink) {
         .from("rooms")
         .select("room_name, room_code, type, is_room_new")
         .eq("room_link", roomLink)
+        .eq("active", true)
         .eq("type", "permanent")
          .eq("owner_id", await isLoggin("id") ?? null)
         .maybeSingle();
@@ -17,10 +18,11 @@ export async function findRoomname(roomLink) {
 
 
 export async function isRoomValid(roomLink) {
-    const { data, error } = await supabase
+    const { error } = await supabase
         .from("rooms")
         .select("*")
         .eq("room_link", roomLink)
+        .eq("active", true)
         .single();
     if (error) return false;
     else return true;

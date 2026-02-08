@@ -1,6 +1,4 @@
-import { link } from "framer-motion/client";
 import supabase from "../../supabaseClient";
-import { isLoggin } from "../login/isLoggin";
 // import { v4 as uuidv4 } from "uuid";
 import { v4 as uuidv4 } from "uuid";
 
@@ -27,12 +25,22 @@ function generateRoomCode() {
 
 const Link = generateRoomCode();
 
+const isKickedMember = (kickedUser) => {
+    if (kickedUser === true) return true;
+    if (kickedUser?.kicked === true) return true;
+    if (kickedUser?.kicker_user === true) return true;
+    if (kickedUser?.kicker_user) return true;
+    return false;
+};
 
 // create room function
 
 
-export async function createRoom(name, password = null) {
+export async function createRoom(name, password = null , solo = false) {
     let roomType = "permanent";
+    if(solo) {
+        roomType = "Solo";
+    }
     let isAnonymous = false;
 
 
@@ -47,7 +55,7 @@ export async function createRoom(name, password = null) {
 
     const user = (await supabase.auth.getUser()).data.user;
 
-    // Supabase marks anonymous users
+//anonymous users
     if (user.is_anonymous ) {
         roomType = "temporary";
         isAnonymous = true;
@@ -65,7 +73,9 @@ export async function createRoom(name, password = null) {
             type: roomType,
             room_link: Link,
             owner_id: user.id,
-            is_room_new: true
+            is_room_new: true,
+            last_join: new Date().toISOString(),
+            active: true
         })
         .select()
         .single();
@@ -81,6 +91,8 @@ export async function createRoom(name, password = null) {
         role: "owner",
         join_token: token
     });
+
+    if (memberError) throw memberError;
 
     return {
         success: true,
@@ -109,12 +121,12 @@ export const handleRoomJoin = async (
         .from("rooms")
         .select("*")
         .eq("room_code", roomCode)
+        .eq("active", true)
         .single();
 
     if (!room) {
         return { status: "not_found" };
     }
-
 
     if (!passwordCheck) {
         if (room.room_password) {
@@ -138,6 +150,9 @@ export const handleRoomJoin = async (
         .single();
 
     if (member) {
+        if (isKickedMember(member.kicked_user)) {
+            return { status: "kicked" };
+        }
         await supabase
             .from("room_members")
             .update({
@@ -153,6 +168,14 @@ export const handleRoomJoin = async (
             join_token: token
         });
     }
+
+    await supabase
+        .from("rooms")
+        .update({
+            last_join: new Date().toISOString(),
+            active: true
+        })
+        .eq("id", room.id);
 
     return {
         status: "joined",

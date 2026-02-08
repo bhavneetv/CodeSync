@@ -5,6 +5,7 @@ import RoomCreate from '../pages/room-create';
 import CodeEditorpage from '../pages/editor';
 import MainCodeEditorPage from '../pages/twst';
 import Login from '../login';
+import RoomCleanupPage from '../pages/room-cleanup';
 
 const AppRoutes = () => {
   return (
@@ -15,6 +16,7 @@ const AppRoutes = () => {
       <Route path="/editor" element={<CodeEditorpage />} />
       <Route path="/twst" element={<MainCodeEditorPage />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/room-cleanup" element={<RoomCleanupPage />} />
     </Routes>
   );
 };

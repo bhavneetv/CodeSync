@@ -9,13 +9,16 @@ import {
   CloudUpload, HardDrive
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
-import { getRoomFiles, buildFileTree, readEncryptedFile, handleCreateFolder, createEncryptedFile, updateEncryptedFile, updateEncryptedFileReliable, deleteEncryptedFile, renameEncryptedFile, deleteFolder } from '../function/files/create-file';
-import { get } from 'lodash';
+import { getRoomFiles, buildFileTree, readEncryptedFile, createEncryptedFile, updateEncryptedFile, updateEncryptedFileReliable, deleteEncryptedFile, renameEncryptedFile, deleteFolder } from '../function/files/create-file';
 import supabase from '../supabaseClient';
 import { isRoomValid } from '../function/rooms/upload-page';
 import { decrypt } from '../function/login/encryption';
-import JSZip from 'jszip';
 import { showToast } from '../Components/toast-notification.jsx';
+import { saveOffline, createFile, createFolder, renameItem, deleteItem } from '../function/editor/editor-files';
+import { pushToGitHub } from '../function/editor/editor-github';
+import { pickDownloadPath as pickDownloadPathExternal, handleSaveToDevice as handleSaveToDeviceExternal, handleDownloadProjectZip as handleDownloadProjectZipExternal } from '../function/editor/editor-download';
+import { set } from 'lodash';
+import { deleteRoom } from '../function/rooms/room-functions.js';
 
 // Cursor colors for different users
 const CURSOR_COLORS = [
@@ -71,6 +74,42 @@ const LANGUAGE_MAP = {
   'sh': 'bash',
 };
 
+const isKickedMember = (kickedUser) => {
+  if (kickedUser === true) return true;
+  if (kickedUser?.kicked === true) return true;
+  if (kickedUser?.kicker_user === true) return true;
+  if (kickedUser?.kicker_user) return true;
+  return false;
+};
+
+const BINARY_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'pdf',
+  'zip', 'rar', '7z', 'mp3', 'mp4', 'mov', 'wav', 'ogg'
+]);
+
+const isBinaryFile = (filename) => {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  return ext ? BINARY_EXTENSIONS.has(ext) : false;
+};
+
+const flattenFileTree = (node, parentPath = '', isRoot = false) => {
+  if (!node) return [];
+  if (node.type === 'file') {
+    return [{
+      id: node.id,
+      name: parentPath ? `${parentPath}/${node.name}` : node.name,
+      fullPath: node.fullPath
+    }];
+  }
+  if (node.type !== 'folder' || !node.children?.length) return [];
+
+  const nextBase = isRoot
+    ? parentPath
+    : (parentPath ? `${parentPath}/${node.name}` : node.name);
+
+  return node.children.flatMap(child => flattenFileTree(child, nextBase, false));
+};
+
 const getFileIcon = (filename) => {
   const ext = filename.split('.').pop();
   const iconData = fileIcons[ext] || fileIcons.default;
@@ -79,10 +118,8 @@ const getFileIcon = (filename) => {
 };
 
 const mockUsers = [
-  { id: 1, name: 'Alice Cooper', role: 'owner', online: true, avatar: '👩‍💻' },
-  { id: 2, name: 'Bob Wilson', role: 'admin', online: true, avatar: '👨‍💼' },
-  { id: 3, name: 'Charlie Brown', role: 'editor', online: false, avatar: '👨‍🎨' },
-  { id: 4, name: 'Guest User', role: 'guest', online: true, avatar: '👤' }
+  { id: 1, name: 'Loading...', role: 'owner', online: true, avatar: '👩‍💻' },
+
 ];
 
 const initialFileTree = {
@@ -122,7 +159,7 @@ function getPlatform() {
 
   const userAgent = window.navigator.userAgent.toLowerCase();
 
-  // Check if running in Electron (Windows/Desktop App)
+
   if (window.process?.type || userAgent.includes('electron')) {
     return 'windows-app';
   }
@@ -159,7 +196,7 @@ export default function CodeEditorPage() {
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [showFileExplorer, setShowFileExplorer] = useState(true);
   const [showBottomPanel, setShowBottomPanel] = useState(true);
-  const [bottomPanelMode, setBottomPanelMode] = useState('terminal'); // 'terminal' or 'chat'
+  const [bottomPanelMode, setBottomPanelMode] = useState('terminal');
   const [terminalHeight, setTerminalHeight] = useState(200);
   const [showUsersModal, setShowUsersModal] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
@@ -240,6 +277,7 @@ export default function CodeEditorPage() {
   const runAbortRef = useRef(null);
   const runTimeoutRef = useRef(null);
   const htmlPreviewUrlRef = useRef(null);
+  const previewRequestRef = useRef(null);
   const lastSavedIdsRef = useRef(new Set());
   const lastZipDownloadRef = useRef(0);
   const lastLocalSyncRef = useRef({});
@@ -279,6 +317,7 @@ export default function CodeEditorPage() {
         .from('rooms')
         .select('room_name, room_code, type, owner_id, file_upload_by, github_repo, github_token')
         .eq('room_link', roomLink)
+        .eq('active', true)
         .single();
 
       if (error) throw error;
@@ -307,11 +346,12 @@ export default function CodeEditorPage() {
           if (!error && data?.name) {
             setRoomOwnerName(data.name);
           } else {
-            setRoomOwnerName("Deleted User");
+            setRoomOwnerName("Unknown User");
           }
         }
       }
     } catch (err) {
+      showToast('Failed to load room data. Please try again later.', 'error', 2500);
       console.error('Failed to fetch room data:', err);
     }
   };
@@ -321,7 +361,16 @@ export default function CodeEditorPage() {
     try {
       const params = new URLSearchParams(window.location.search);
       const token = params.get("token");
-      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+      const roomRow = await supabase
+        .from("rooms")
+        .select("id")
+        .eq("room_link", roomLink)
+        .eq("active", true)
+        .maybeSingle();
+      if (roomRow.error || !roomRow.data?.id) {
+        throw new Error('Room is inactive or unavailable');
+      }
+      const roomId = roomRow.data.id;
 
       const { data, error } = await supabase
         .from('room_members')
@@ -334,13 +383,14 @@ export default function CodeEditorPage() {
         setDownloadPath(data.download_path);
       }
     } catch (err) {
+      showToast('Failed to load download path. Please try again later.', 'error', 2500);
       console.error('Failed to fetch download path:', err);
     }
   };
 
   useEffect(() => {
     if (currentPlatform !== 'web' && downloadPath) {
-      console.log('Download path:', downloadPath);
+      // console.log('Download path:', downloadPath);
     }
   }, [currentPlatform, downloadPath]);
 
@@ -349,7 +399,16 @@ export default function CodeEditorPage() {
     try {
       const params = new URLSearchParams(window.location.search);
       const token = params.get("token");
-      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+      const roomRow = await supabase
+        .from("rooms")
+        .select("id")
+        .eq("room_link", roomLink)
+        .eq("active", true)
+        .maybeSingle();
+      if (roomRow.error || !roomRow.data?.id) {
+        throw new Error('Room is inactive or unavailable');
+      }
+      const roomId = roomRow.data.id;
 
       const { error } = await supabase
         .from('room_members')
@@ -362,6 +421,7 @@ export default function CodeEditorPage() {
       setDownloadPath(path);
       return { success: true };
     } catch (err) {
+      showToast('Failed to save download path. Please try again later.', 'error', 2500);
       console.error('Failed to save download path:', err);
       return { success: false, error: err.message };
     }
@@ -378,6 +438,7 @@ export default function CodeEditorPage() {
         const tree = buildFileTree(files);
         setFileTree(tree);
       } catch (err) {
+        showToast('Failed to load files. Please try again later.', 'error', 2500);
         console.error("Failed to load files:", err);
       }
     }
@@ -421,7 +482,20 @@ export default function CodeEditorPage() {
       return;
     }
 
-    const ID = (await supabase.from("rooms").select("id").eq("room_link", roomId).single()).data.id;
+    const roomRow = await supabase
+      .from("rooms")
+      .select("id")
+      .eq("room_link", roomId)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (roomRow.error || !roomRow.data?.id) {
+      showToast('Room is inactive or unavailable.', 'error', 2500);
+      window.location.href = "/create-room";
+      return;
+    }
+
+    const ID = roomRow.data.id;
 
     const { data, error } = await supabase
       .from("room_members")
@@ -431,19 +505,24 @@ export default function CodeEditorPage() {
       .single();
 
     if (!data) {
+      showToast('Access denied. Please join the room through the correct link.', 'error', 2500);
       console.log("Access denied");
       window.location.href = "/create-room";
       return;
     }
     console.log(error);
-    
-    if (data.kicked_user && data.kicked_user.kicked === true) {
-      alert('You have been removed from this room.');
-      window.location.href = "/create-room";
+
+    if (isKickedMember(data.kicked_user)) {
+
+      showToast('You have been removed from this room.', 'error', 2500);
+      setTimeout(() => {
+
+        window.location.href = "/create-room";
+      }, 3000);
       return;
     }
-    
-    setUserRole("admin");
+
+    setUserRole(data.role);
     setCurrentUserId(data.user_id);
 
     const userColor = getUserColor(data.user_id);
@@ -463,6 +542,7 @@ export default function CodeEditorPage() {
           userName = userData.name;
         }
       } catch (err) {
+        showToast('Could not fetch from user table. Please try again later.', 'error', 2500);
         console.log("Could not fetch from user table:", err);
       }
     }
@@ -497,7 +577,7 @@ export default function CodeEditorPage() {
     /* -------------------- PRESENCE SYNC -------------------- */
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState();
-      console.log('Presence synced', state);
+      // console.log('Presence synced', state);
       const users = [];
 
       Object.values(state).forEach(presences => {
@@ -517,11 +597,11 @@ export default function CodeEditorPage() {
     });
 
     channel.on('presence', { event: 'join' }, ({ newPresences }) => {
-      console.log('User joined:', newPresences);
+      // console.log('User joined:', newPresences);
     });
 
     channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-      console.log('User left:', leftPresences);
+      // console.log('User left:', leftPresences);
     });
 
     /* -------------------- CURSOR -------------------- */
@@ -687,8 +767,11 @@ export default function CodeEditorPage() {
     /* -------------------- KICK -------------------- */
     channel.on('broadcast', { event: 'user-kicked' }, ({ payload }) => {
       if (payload.userId === userId) {
-        alert('You have been removed from this room by the owner.');
-        window.location.href = '/create-room';
+        showToast('You have been removed from this room.', 'error', 2500);
+        setTimeout(() => {
+          window.location.href = '/create-room';
+
+        }, 2500);
       }
     });
 
@@ -716,6 +799,7 @@ export default function CodeEditorPage() {
       const tree = buildFileTree(files);
       setFileTree(tree);
     } catch (err) {
+      showToast("Failed to reload files", "error", 2500);
       console.error("Failed to reload files:", err);
     }
   };
@@ -825,20 +909,7 @@ export default function CodeEditorPage() {
     setFileTree((prev) => updateTree(prev, path));
   };
 
-  async function readFileContent(storagePath) {
-    const { data, error } = await supabase
-      .storage
-      .from("user-files")
-      .download(storagePath);
 
-    if (error) {
-      console.error("DOWNLOAD ERROR:", error);
-      throw error;
-    }
-
-    const text = await data.text();
-    return decrypt(text);
-  }
 
   const openFile = async (fileNode, openInBackground = false) => {
     // Prevent duplicate opens
@@ -889,7 +960,7 @@ export default function CodeEditorPage() {
           lastSavedContentRef.current[fileNode.id] = content;
         } catch (err) {
           console.error("Failed to load file content:", err);
-          alert(`Failed to load file: ${err.message}`);
+          showToast('Failed to load file content. Please try again later.', 'error', 2500);
         }
       } else {
         setActiveFile(existingTab);
@@ -911,12 +982,13 @@ export default function CodeEditorPage() {
 
       try {
         content = await readEncryptedFile(fileNode.fullPath);
-        console.log('Loaded from server:', fileNode.id, content.length, 'chars');
+        // console.log('Loaded from server:', fileNode.id, content.length, 'chars');
       } catch (err) {
+        showToast('Failed to load file content from server', 'error', 2500);
         console.error('Failed to load from server:', err);
 
         if (realtimeChannelRef.current && currentUserId) {
-          console.log('Requesting content from other users');
+          // console.log('Requesting content from other users');
           realtimeChannelRef.current.send({
             type: 'broadcast',
             event: 'request-file-content',
@@ -932,7 +1004,7 @@ export default function CodeEditorPage() {
           // Check if we got content
           if (allFileContents[fileNode.id]) {
             content = allFileContents[fileNode.id];
-            console.log('Received content from other user');
+            // console.log('Received content from other user');
           } else {
             content = ''; // Default to empty
           }
@@ -1010,7 +1082,7 @@ export default function CodeEditorPage() {
       }
     } catch (err) {
       console.error("Open file failed:", err);
-      alert(`Failed to open file: ${err.message}`);
+      showToast('Failed to open file. Please try again later.', 'error', 2500);
     } finally {
       setOpeningFiles(prev => {
         const newSet = new Set(prev);
@@ -1295,271 +1367,33 @@ export default function CodeEditorPage() {
   };
 
   // Improved save with verification
-  const handleSaveOffline = async () => {
-    if (!canEdit) {
-      return;
-    }
-
-    const dirtyTabs = openTabs.filter(t => t.isDirty);
-    if (dirtyTabs.length === 0) {
-      return;
-    }
-
-    setIsSaving(true);
-
-    try {
-      const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-      const savePromises = dirtyTabs.map(async (tab) => {
-        const content = allFileContents[tab.id] || tab.content || '';
-
-        // Only save if content actually changed from last saved version
-        if (lastSavedContentRef.current[tab.id] === content) {
-          return { tabId: tab.id, success: true, skipped: true };
-        }
-
-        let result = await updateEncryptedFileReliable(tab.fullPath, content);
-        if (!result.success) {
-          result = await updateEncryptedFile(tab.fullPath, content);
-        }
-
-        if (result.success) {
-          lastSavedContentRef.current[tab.id] = content;
-
-          // Verify the save by reading back
-          try {
-            let verified = false;
-            for (let attempt = 0; attempt < 3; attempt += 1) {
-              const verifyContent = await readEncryptedFile(tab.fullPath);
-              if (verifyContent === content) {
-                verified = true;
-                break;
-              }
-              await sleep(200 * (attempt + 1));
-            }
-            if (!verified) {
-              console.warn('Save verification delayed for:', tab.id);
-              return { tabId: tab.id, success: true, warning: 'Verification delayed' };
-            }
-          } catch (verifyErr) {
-            console.error('Save verification error:', verifyErr);
-            // Continue anyway, save might have worked
-          }
-        }
-
-        return { tabId: tab.id, success: result.success, error: result.error };
-      });
-
-      const results = await Promise.all(savePromises);
-      const failed = results.filter(r => !r.success && !r.skipped);
-      const saved = results.filter(r => r.success && !r.skipped);
-      const savedIds = new Set(saved.map(r => r.tabId));
-
-      if (savedIds.size > 0) {
-        // Mark saved tabs as not dirty
-        setOpenTabs(prev =>
-          prev.map(t => (savedIds.has(t.id) ? { ...t, isDirty: false } : t))
-        );
-        lastSavedIdsRef.current = new Set(savedIds);
-      }
-
-      if (saved.length > 0) {
-        showToast(`Saved ${saved.length} file(s)`, 'success');
-      }
-
-      if (failed.length > 0) {
-        console.error('Some files failed to save:', failed);
-        showToast(`Failed to save ${failed.length} file(s)`, 'error');
-      }
-
-    } catch (err) {
-      console.error('Failed to save:', err);
-      showToast(`Failed to save files: ${err.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const handleSaveOffline = async () => saveOffline({
+    canEdit,
+    openTabs,
+    allFileContents,
+    lastSavedContentRef,
+    updateEncryptedFileReliable,
+    updateEncryptedFile,
+    readEncryptedFile,
+    setOpenTabs,
+    lastSavedIdsRef,
+    showToast,
+    setIsSaving
+  });
 
   // Push to GitHub function
-  const handlePushToGitHub = async () => {
-    if (!canPushToGitHub) {
-      return;
-    }
-    if (!isGitHubEnabled || !githubRepo || !githubToken) {
-      alert('GitHub integration is not configured for this room.');
-      return;
-    }
-
-    const dirtyTabsSnapshot = openTabs.filter(t => t.isDirty);
-    const savedIdsSnapshot = Array.from(lastSavedIdsRef.current || []);
-    if (dirtyTabsSnapshot.length === 0 && savedIdsSnapshot.length === 0) {
-      alert('No changes to push.');
-      return;
-    }
-
-    setIsPushingToGitHub(true);
-
-    try {
-      // First, save offline
-      await handleSaveOffline();
-
-      // Parse repo (format: owner/repo or repo)
-      const repoInput = githubRepo
-        .replace('https://github.com/', '')
-        .replace('http://github.com/', '')
-        .replace(/\.git$/, '');
-
-      let owner = '';
-      let repo = '';
-
-      const parts = repoInput.split('/').filter(Boolean);
-      if (parts.length >= 2) {
-        owner = parts[0];
-        repo = parts[1];
-      } else {
-        repo = parts[0];
-      }
-
-      if (!repo) {
-        throw new Error('Invalid GitHub repository. Provide "owner/repo" or a repo name.');
-      }
-
-      if (!owner) {
-        const userResponse = await fetch('https://api.github.com/user', {
-          headers: {
-            'Authorization': `token ${githubToken}`,
-            'Accept': 'application/vnd.github.v3+json'
-          }
-        });
-        if (!userResponse.ok) {
-          throw new Error('Failed to resolve GitHub owner from token');
-        }
-        const userData = await userResponse.json();
-        owner = userData.login;
-      }
-
-      // Get default branch
-      const branchResponse = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}`,
-        {
-          headers: {
-            'Authorization': `token ${githubToken}`,
-            'Accept': 'application/vnd.github.v3+json'
-          }
-        }
-      );
-
-      if (!branchResponse.ok) {
-        throw new Error('Failed to fetch repository information');
-      }
-
-      const repoData = await branchResponse.json();
-      const defaultBranch = repoData.default_branch || 'main';
-
-      const dirtyIds = new Set(dirtyTabsSnapshot.map(t => t.id));
-      const pushIds = dirtyIds.size > 0 ? dirtyIds : new Set(savedIdsSnapshot);
-      const pushTabs = openTabs.filter(t => pushIds.has(t.id));
-      if (pushTabs.length === 0) {
-        throw new Error('No saved changes found to push.');
-      }
-
-      const resolveRepoPathById = (node, targetId, parentPath = '') => {
-        if (!node) return null;
-        if (node.type === 'file' && node.id === targetId) {
-          return node.repoPath || (parentPath ? `${parentPath}/${node.name}` : node.name);
-        }
-        if (node.type === 'folder' && node.children) {
-          const nextPath = node.name === 'project' ? parentPath : (parentPath ? `${parentPath}/${node.name}` : node.name);
-          for (const child of node.children) {
-            const found = resolveRepoPathById(child, targetId, nextPath);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-
-      // Push each dirty file
-      const pushPromises = pushTabs.map(async (tab) => {
-        const content = allFileContents[tab.id] || tab.content || '';
-        const base64Content = btoa(unescape(encodeURIComponent(content)));
-        const filePath = tab.repoPath
-          || resolveRepoPathById(fileTree, tab.id)
-          || tab.name;
-
-        // Get current file SHA if it exists
-        let sha = null;
-        try {
-          const fileResponse = await fetch(
-            `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-            {
-              headers: {
-                'Authorization': `token ${githubToken}`,
-                'Accept': 'application/vnd.github.v3+json'
-              }
-            }
-          );
-
-          if (fileResponse.ok) {
-            const fileData = await fileResponse.json();
-            sha = fileData.sha;
-          }
-        } catch (err) {
-          console.log('File does not exist yet:', tab.fullPath);
-        }
-
-        // Create or update file
-        const body = {
-          message: `Update ${tab.name} from CodeSync `,
-          content: base64Content,
-          branch: defaultBranch
-        };
-
-        if (sha) {
-          body.sha = sha;
-        }
-
-        const response = await fetch(
-          `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-          {
-            method: 'PUT',
-            headers: {
-              'Authorization': `token ${githubToken}`,
-              'Content-Type': 'application/json',
-              'Accept': 'application/vnd.github.v3+json'
-            },
-            body: JSON.stringify(body)
-          }
-        );
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(`Failed to push ${tab.name}: ${error.message}`);
-        }
-
-        return { tabId: tab.id, success: true, name: tab.name };
-      });
-
-      const results = await Promise.all(pushPromises);
-      const successful = results.filter(r => r.success);
-      if (pushIds.size > 0) {
-        lastSavedIdsRef.current = new Set(
-          Array.from(lastSavedIdsRef.current).filter(id => !pushIds.has(id))
-        );
-      }
-
-      // Show success message
-      const successMsg = document.createElement('div');
-      successMsg.textContent = `✓ Pushed ${successful.length} file(s) to GitHub`;
-      successMsg.style.cssText = 'position:fixed;top:20px;right:20px;background:#10b981;color:white;padding:12px 20px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:14px;font-weight:500;';
-      document.body.appendChild(successMsg);
-      setTimeout(() => successMsg.remove(), 3000);
-
-    } catch (err) {
-      console.error('Failed to push to GitHub:', err);
-      alert(`Failed to push to GitHub: ${err.message}`);
-    } finally {
-      setIsPushingToGitHub(false);
-    }
-  };
+  const handlePushToGitHub = async () => pushToGitHub({
+    canPushToGitHub,
+    isGitHubEnabled,
+    githubRepo,
+    githubToken,
+    openTabs,
+    lastSavedIdsRef,
+    allFileContents,
+    fileTree,
+    setIsPushingToGitHub,
+    handleSaveOffline
+  });
 
   const getRuntimeWsUrl = () => {
     if (import.meta?.env?.VITE_RUNTIME_WS_URL) {
@@ -1572,6 +1406,13 @@ export default function CodeEditorPage() {
     const host = window.location.hostname || 'localhost';
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     return `${protocol}://${host}:8080`;
+  };
+
+  const getRuntimeHttpUrl = () => {
+    const wsUrl = getRuntimeWsUrl();
+    if (wsUrl.startsWith('wss://')) return wsUrl.replace('wss://', 'https://');
+    if (wsUrl.startsWith('ws://')) return wsUrl.replace('ws://', 'http://');
+    return wsUrl;
   };
 
   const connectRuntimeSocket = () => {
@@ -1610,28 +1451,58 @@ export default function CodeEditorPage() {
           runtimeSocketRef.current = null;
         };
 
-        socket.onmessage = (event) => {
-          let msg;
-          try {
-            msg = JSON.parse(event.data);
-          } catch {
-            return;
-          }
+          socket.onmessage = (event) => {
+            let msg;
+            try {
+              msg = JSON.parse(event.data);
+            } catch {
+              return;
+            }
 
-          if (msg.type === 'stdout') {
-            setTerminalOutput(prev => [...prev, {
-              type: 'output',
-              content: msg.data,
-              timestamp: new Date()
+            if (msg.type === 'preview') {
+              const pending = previewRequestRef.current;
+              if (pending && msg.requestId === pending.requestId) {
+                clearTimeout(pending.timeout);
+                previewRequestRef.current = null;
+                const baseUrl = getRuntimeHttpUrl();
+                const previewUrl = msg.url?.startsWith('http')
+                  ? msg.url
+                  : `${baseUrl}${msg.url || ''}`;
+                setHtmlPreviewUrl(previewUrl);
+                setTerminalOutput(prev => [...prev, {
+                  type: 'link',
+                  content: previewUrl,
+                  timestamp: new Date()
+                }]);
+                pending.resolve(previewUrl);
+              }
+              return;
+            }
+
+            if (msg.type === 'preview-error') {
+              const pending = previewRequestRef.current;
+              if (pending && msg.requestId === pending.requestId) {
+                clearTimeout(pending.timeout);
+                previewRequestRef.current = null;
+                pending.reject(new Error(msg.data || 'Failed to create preview'));
+              }
+              return;
+            }
+
+            if (msg.type === 'stdout') {
+              setTerminalOutput(prev => [...prev, {
+                type: 'output',
+                content: msg.data,
+                timestamp: new Date()
             }]);
           } else if (msg.type === 'stderr' || msg.type === 'error') {
-            setTerminalOutput(prev => [...prev, {
-              type: 'error',
-              content: msg.data,
-              timestamp: new Date()
-            }]);
-            if (msg.type === 'error') {
-              clearRunTimeout();
+              setTerminalOutput(prev => [...prev, {
+                type: 'error',
+                content: msg.data,
+                timestamp: new Date()
+              }]);
+              if (msg.type === 'error') {
+                clearRunTimeout();
               setIsRunning(false);
               setIsInteractiveRun(false);
               if (pendingFallbackRun) {
@@ -1656,9 +1527,82 @@ export default function CodeEditorPage() {
         runtimeConnectPromiseRef.current = null;
         reject(err);
       }
-    });
+      });
 
     return runtimeConnectPromiseRef.current;
+  };
+
+  const requestHtmlPreview = async (files, main) => {
+    const socket = await connectRuntimeSocket();
+    return new Promise((resolve, reject) => {
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const timeout = setTimeout(() => {
+        if (previewRequestRef.current?.requestId === requestId) {
+          previewRequestRef.current = null;
+        }
+        reject(new Error('Preview timed out'));
+      }, 8000);
+
+      previewRequestRef.current = { requestId, resolve, reject, timeout };
+      socket.send(JSON.stringify({
+        type: 'preview',
+        files,
+        main,
+        requestId
+      }));
+    });
+  };
+
+  const collectProjectFiles = async (activeId, activeContent) => {
+    const entries = flattenFileTree(fileTree, '', true).filter(entry => !isBinaryFile(entry.name));
+    const activeEntry = entries.find(entry => entry.id === activeId);
+    const orderedEntries = activeEntry
+      ? [activeEntry, ...entries.filter(entry => entry.id !== activeId)]
+      : entries;
+
+    const cacheUpdates = {};
+    const readErrors = [];
+
+    const files = await Promise.all(orderedEntries.map(async (entry) => {
+      if (entry.id === activeId) {
+        return { name: entry.name, content: activeContent ?? '' };
+      }
+
+      if (Object.prototype.hasOwnProperty.call(allFileContents, entry.id)) {
+        return { name: entry.name, content: allFileContents[entry.id] ?? '' };
+      }
+
+      const tab = openTabs.find(t => t.id === entry.id);
+      if (tab?.content !== undefined && tab?.content !== null) {
+        return { name: entry.name, content: tab.content ?? '' };
+      }
+
+      if (entry.fullPath) {
+        try {
+          const content = await readEncryptedFile(entry.fullPath);
+          cacheUpdates[entry.id] = content;
+          return { name: entry.name, content: content ?? '' };
+        } catch (err) {
+          readErrors.push(entry.name);
+          return { name: entry.name, content: '' };
+        }
+      }
+
+      return { name: entry.name, content: '' };
+    }));
+
+    if (Object.keys(cacheUpdates).length > 0) {
+      setAllFileContents(prev => ({ ...prev, ...cacheUpdates }));
+    }
+
+    if (readErrors.length > 0) {
+      showToast(`Failed to read ${readErrors.length} file(s) for run`, 'error', 2000);
+    }
+
+    return {
+      files,
+      activePath: activeEntry?.name || activeFile?.name || ''
+    };
   };
 
   const clearRunTimeout = () => {
@@ -1738,7 +1682,7 @@ export default function CodeEditorPage() {
             timestamp: new Date()
           }]);
         }
-        
+
         if (result.run.stderr) {
           setTerminalOutput(prev => [...prev, {
             type: 'error',
@@ -1798,7 +1742,7 @@ export default function CodeEditorPage() {
   const handleRunCode = async () => {
     const currentActiveFile = activeFileRef.current || activeFile;
     if (!currentActiveFile) {
-      alert('Please open a file to run');
+      showToast('Please open a file to run', 'error', 2500);
       return;
     }
 
@@ -1809,13 +1753,7 @@ export default function CodeEditorPage() {
       ? editorContentRef.current
       : (allFileContents[currentActiveFile.id] || currentActiveFile.content || '');
 
-    // Collect all file contents for import/export support
-    const files = openTabs.map(tab => ({
-      name: tab.name,
-      content: tab.id === currentActiveFile.id
-        ? activeContent
-        : (allFileContents[tab.id] || tab.content || '')
-    }));
+    const { files, activePath } = await collectProjectFiles(currentActiveFile.id, activeContent);
 
     // Main file to execute
     const mainFileContent = activeContent || editorContent;
@@ -1824,20 +1762,41 @@ export default function CodeEditorPage() {
     if (extension === 'html' || extension === 'htm') {
       if (htmlPreviewUrlRef.current) {
         URL.revokeObjectURL(htmlPreviewUrlRef.current);
+        htmlPreviewUrlRef.current = null;
       }
-      const blob = new Blob([mainFileContent || ''], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      htmlPreviewUrlRef.current = url;
-      setHtmlPreviewUrl(url);
       setBottomPanelMode('terminal');
       setShowBottomPanel(true);
+      setTerminalOutput(prev => [...prev, {
+        type: 'system',
+        content: '$ Preparing HTML preview...',
+        timestamp: new Date()
+      }]);
+
+      try {
+        await requestHtmlPreview(files, activePath || currentActiveFile.name);
+      } catch (err) {
+        const blob = new Blob([mainFileContent || ''], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        htmlPreviewUrlRef.current = url;
+        setHtmlPreviewUrl(url);
+        setTerminalOutput(prev => [...prev, {
+          type: 'system',
+          content: 'Runtime server not available. Using local preview.',
+          timestamp: new Date()
+        }, {
+          type: 'link',
+          content: url,
+          timestamp: new Date()
+        }]);
+      }
       return;
     }
 
     const language = LANGUAGE_MAP[extension];
 
     if (!language) {
-      alert(`Language not supported for .${extension} files`);
+      // console.error(`Language not supported for .${extension} files` , 'error' , 2500);
+      showToast(`Language not supported for .${extension} files`, 'error', 2500);
       return;
     }
     const stdinValue = terminalInput || '';
@@ -1856,7 +1815,7 @@ export default function CodeEditorPage() {
     const payload = {
       language: language,
       version: '*',
-      files: files.length > 1 ? files : [
+      files: files.length > 0 ? files : [
         {
           name: currentActiveFile.name,
           content: mainFileContent
@@ -1891,7 +1850,7 @@ export default function CodeEditorPage() {
         setShowBottomPanel(true);
         setTerminalOutput(prev => [...prev, {
           type: 'system',
-          content: `$ Running ${currentActiveFile.name} (local runtime)...`,
+          content: `$ Running ${currentActiveFile.name} (Server runtime)...`,
           timestamp: new Date()
         }]);
         clearRunTimeout();
@@ -1907,26 +1866,26 @@ export default function CodeEditorPage() {
             timestamp: new Date()
           }]);
         }, 30000);
-        socket.send(JSON.stringify({
-          type: 'run',
-          language: localLanguageMap[language],
-          files: payload.files,
-          main: currentActiveFile.name
-        }));
-        return;
-      } catch (err) {
+          socket.send(JSON.stringify({
+            type: 'run',
+            language: localLanguageMap[language],
+            files: payload.files,
+            main: activePath || currentActiveFile.name
+          }));
+          return;
+        } catch (err) {
         if (!runtimeUnavailableNotified) {
           setRuntimeUnavailableNotified(true);
           setTerminalOutput(prev => [...prev, {
             type: 'system',
-            content: 'Local runtime not available. Falling back to cloud runner.',
+            content: 'Server runtime not available. Falling back to cloud runner.',
             timestamp: new Date()
           }]);
         }
         if (runMode === 'local') {
           setTerminalOutput(prev => [...prev, {
             type: 'error',
-            content: 'Local runtime is required in this mode, but it is not reachable.',
+            content: 'Server runtime is required in this mode, but it is not reachable.',
             timestamp: new Date()
           }]);
           return;
@@ -1949,426 +1908,64 @@ export default function CodeEditorPage() {
     await executeRun(payload, currentActiveFile.name);
   };
 
-  const handleCreateFile = async (fileName, extension, parentPath) => {
-    setIsCreatingFile(true);
-    try {
-      const folderPath = resolveFolderPath(fileTree, parentPath);
-      const fullFileName = `${fileName}.${extension}`;
+  const handleCreateFile = async (fileName, extension, parentPath) => createFile({
+    setIsCreatingFile,
+    fileTree,
+    setCreateFileModal,
+    createEncryptedFile,
+    roomLink,
+    setFileTree,
+    setAllFileContents,
+    realtimeChannelRef,
+    currentUserId,
+    onFileCreated: openFile,
+    showToast
+  }, fileName, extension, parentPath);
 
-      const checkDuplicate = (node, path) => {
-        if (!node) {
-          console.error('Node is undefined in checkDuplicate');
-          return false;
-        }
+  const handleCreateFolder = async (folderName, parentPath) => createFolder({
+    fileTree,
+    setIsCreatingFolder,
+    setCreateFolderModal,
+    setFileTree,
+    realtimeChannelRef,
+    currentUserId,
+    showToast
+  }, folderName, parentPath);
 
-        if (path.length === 0) {
-          return node.children?.some(child =>
-            child && child.type === 'file' && child.name === fullFileName
-          ) || false;
-        }
+  const handleRename = async (newName) => renameItem({
+    renameModal,
+    setRenameModal,
+    setIsRenamingItem,
+    renameEncryptedFile,
+    setFileTree,
+    setOpenTabs,
+    activeFile,
+    setActiveFile,
+    realtimeChannelRef,
+    currentUserId,
+    showToast
+  }, newName);
 
-        const [idx, ...rest] = path;
-        if (!node.children || !node.children[idx]) {
-          console.error('Invalid path in checkDuplicate');
-          return false;
-        }
-        return checkDuplicate(node.children[idx], rest);
-      };
-
-      if (checkDuplicate(fileTree, parentPath)) {
-        alert(`A file named "${fullFileName}" already exists in this location.`);
-        setCreateFileModal({ show: false, parentPath: [] });
-        setIsCreatingFile(false);
-        return;
-      }
-
-      const result = await createEncryptedFile(
-        roomLink,
-        fileName,
-        extension,
-        false,
-        folderPath,
-        ""
-      );
-
-      if (result.success) {
-        const newFile = {
-          id: result.data.id,
-          name: fullFileName,
-          type: "file",
-          fullPath: result.data.storage_path,
-          content: "",
-        };
-
-        const addFileToTree = (node, path) => {
-          if (!node) {
-            console.error('Node is undefined in addFileToTree');
-            return fileTree;
-          }
-
-          if (path.length === 0) {
-            return {
-              ...node,
-              children: [...(node.children || []), newFile],
-            };
-          }
-
-          const [idx, ...rest] = path;
-
-          if (!node.children || !node.children[idx]) {
-            console.error('Invalid path in addFileToTree, adding to root');
-            return {
-              ...node,
-              children: [...(node.children || []), newFile],
-            };
-          }
-
-          return {
-            ...node,
-            children: node.children.map((child, i) =>
-              i === idx ? addFileToTree(child, rest) : child
-            ),
-          };
-        };
-
-        setFileTree((prev) => addFileToTree(prev, parentPath));
-
-        // Initialize file content in cache
-        setAllFileContents(prev => ({
-          ...prev,
-          [newFile.id]: ""
-        }));
-
-        // Broadcast file creation
-        if (realtimeChannelRef.current && currentUserId) {
-          realtimeChannelRef.current.send({
-            type: 'broadcast',
-            event: 'file-created',
-            payload: {
-              userId: currentUserId,
-              file: newFile
-            }
-          });
-        }
-      } else {
-        console.error('Failed to create file:', result.error);
-        alert(`Failed to create file: ${result.error}`);
-      }
-    } catch (err) {
-      console.error("Error creating file:", err);
-      alert(`Failed to create file: ${err.message}`);
-    } finally {
-      setCreateFileModal({ show: false, parentPath: [] });
-      setIsCreatingFile(false);
-    }
-  };
-
-  const resolveFolderPath = (tree, indexPath) => {
-    if (!indexPath || indexPath.length === 0) return "";
-
-    let current = tree;
-    const parts = [];
-
-    for (const index of indexPath) {
-      if (!current?.children?.[index]) break;
-
-      current = current.children[index];
-
-      if (current.type === "folder") {
-        parts.push(current.name);
-      }
-    }
-
-    return parts.join("/");
-  };
-
-  const handleCreateFolder = async (folderName, parentPath) => {
-    if (!folderName) return;
-
-    setIsCreatingFolder(true);
-    try {
-      const safePath = normalizeFolderParentPath(fileTree, parentPath);
-
-      // Check for duplicate folder
-      const checkDuplicate = (node, path) => {
-        if (!node) return false;
-
-        if (path.length === 0) {
-          return node.children?.some(child =>
-            child && child.type === 'folder' && child.name === folderName
-          ) || false;
-        }
-        const [idx, ...rest] = path;
-        if (!node.children || !node.children[idx]) return false;
-        return checkDuplicate(node.children[idx], rest);
-      };
-
-      if (checkDuplicate(fileTree, safePath)) {
-        alert(`A folder named "${folderName}" already exists in this location.`);
-        setCreateFolderModal({ show: false, parentPath: [] });
-        setIsCreatingFolder(false);
-        return;
-      }
-
-      const addFolder = (node, path) => {
-        if (!node) return node;
-
-        if (path.length === 0) {
-          return {
-            ...node,
-            isExpanded: true,
-            children: [
-              ...(node.children || []),
-              {
-                name: folderName,
-                type: "folder",
-                isExpanded: true,
-                children: [],
-              },
-            ],
-          };
-        }
-
-        const [idx, ...rest] = path;
-
-        return {
-          ...node,
-          children: node.children.map((child, i) =>
-            i === idx ? addFolder(child, rest) : child
-          ),
-        };
-      };
-
-      setFileTree((prev) => addFolder(prev, safePath));
-
-      // Broadcast folder creation
-      if (realtimeChannelRef.current && currentUserId) {
-        realtimeChannelRef.current.send({
-          type: 'broadcast',
-          event: 'file-created',
-          payload: {
-            userId: currentUserId,
-            folder: folderName
-          }
-        });
-      }
-    } catch (err) {
-      console.error('Error creating folder:', err);
-      alert(`Failed to create folder: ${err.message}`);
-    } finally {
-      setCreateFolderModal({ show: false, parentPath: [] });
-      setIsCreatingFolder(false);
-    }
-  };
-
-  const normalizeFolderParentPath = (tree, path) => {
-    if (!path || path.length === 0) return [];
-
-    let current = tree;
-    const normalized = [];
-
-    for (const index of path) {
-      const node = current.children?.[index];
-      if (!node) break;
-
-      if (node.type === "folder") {
-        normalized.push(index);
-        current = node;
-      } else {
-        break;
-      }
-    }
-
-    return normalized;
-  };
-
-  const handleRename = async (newName) => {
-    if (!renameModal.item || !newName || newName === renameModal.item.name) {
-      setRenameModal({ show: false, item: null, path: [] });
-      return;
-    }
-
-    setIsRenamingItem(true);
-    try {
-      const item = renameModal.item;
-
-      if (item.type === 'file') {
-        const parts = newName.split('.');
-        const extension = parts.length > 1 ? parts.pop() : '';
-        const fileName = parts.join('.');
-
-        const result = await renameEncryptedFile(item.id, fileName, extension);
-
-        if (result.success) {
-          const renameInTree = (node, path) => {
-            if (path.length === 1) {
-              return {
-                ...node,
-                children: node.children.map((child, i) =>
-                  i === path[0] && child.id === item.id
-                    ? { ...child, name: newName }
-                    : child
-                ),
-              };
-            }
-
-            const [idx, ...rest] = path;
-            return {
-              ...node,
-              children: node.children.map((child, i) =>
-                i === idx ? renameInTree(child, rest) : child
-              ),
-            };
-          };
-
-          setFileTree((prev) => renameInTree(prev, renameModal.path));
-
-          setOpenTabs(prev =>
-            prev.map(tab =>
-              tab.id === item.id
-                ? { ...tab, name: newName }
-                : tab
-            )
-          );
-
-          if (activeFile?.id === item.id) {
-            setActiveFile(prev => ({ ...prev, name: newName }));
-          }
-
-          // Broadcast rename
-          if (realtimeChannelRef.current && currentUserId) {
-            realtimeChannelRef.current.send({
-              type: 'broadcast',
-              event: 'file-renamed',
-              payload: {
-                userId: currentUserId,
-                fileId: item.id,
-                newName: newName
-              }
-            });
-          }
-        } else {
-          showToast(`Failed to rename: ${result.error}`, 'error');
-        }
-      } else {
-        const renameInTree = (node, path) => {
-          if (path.length === 1) {
-            return {
-              ...node,
-              children: node.children.map((child, i) =>
-                i === path[0] && child.type === 'folder'
-                  ? { ...child, name: newName }
-                  : child
-              ),
-            };
-          }
-
-          const [idx, ...rest] = path;
-          return {
-            ...node,
-            children: node.children.map((child, i) =>
-              i === idx ? renameInTree(child, rest) : child
-            ),
-          };
-        };
-
-        setFileTree((prev) => renameInTree(prev, renameModal.path));
-
-        // Broadcast rename
-        if (realtimeChannelRef.current && currentUserId) {
-          realtimeChannelRef.current.send({
-            type: 'broadcast',
-            event: 'file-renamed',
-            payload: {
-              userId: currentUserId,
-              folderName: newName
-            }
-          });
-        }
-      }
-    } catch (err) {
-      console.error('Error renaming:', err);
-      showToast(`Failed to rename: ${err.message}`, 'error');
-    } finally {
-      setRenameModal({ show: false, item: null, path: [] });
-      setIsRenamingItem(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteModal.item) {
-      setDeleteModal({ show: false, item: null, path: [] });
-      return;
-    }
-
-    setIsDeletingItem(true);
-    try {
-      const item = deleteModal.item;
-
-      if (item.type === 'file') {
-        const result = await deleteEncryptedFile(item.id, item.fullPath);
-
-        if (result.success) {
-          const removeFileFromTree = (node, path) => {
-            if (path.length === 0) {
-              return {
-                ...node,
-                children: node.children.filter(child => child.id !== item.id),
-              };
-            }
-
-            const [idx, ...rest] = path;
-            return {
-              ...node,
-              children: node.children.map((child, i) =>
-                i === idx ? removeFileFromTree(child, rest) : child
-              ),
-            };
-          };
-
-          setFileTree((prev) => removeFileFromTree(prev, deleteModal.path.slice(0, -1)));
-
-          if (openTabs.some(tab => tab.id === item.id)) {
-            const newTabs = openTabs.filter(tab => tab.id !== item.id);
-            setOpenTabs(newTabs);
-
-            if (activeFile?.id === item.id) {
-              if (newTabs.length > 0) {
-                const nextTab = newTabs[newTabs.length - 1];
-                setActiveFile(nextTab);
-                setEditorContent(nextTab.content || '');
-                editorContentRef.current = nextTab.content || '';
-              } else {
-                setActiveFile(null);
-                setEditorContent('');
-                editorContentRef.current = '';
-              }
-            }
-          }
-
-          // Broadcast deletion
-          if (realtimeChannelRef.current && currentUserId) {
-            realtimeChannelRef.current.send({
-              type: 'broadcast',
-              event: 'file-deleted',
-              payload: {
-                userId: currentUserId,
-                fileId: item.id
-              }
-            });
-          }
-        } else {
-          alert(`Failed to delete: ${result.error}`);
-        }
-      }
-    } catch (err) {
-      console.error('Error deleting:', err);
-      alert(`Failed to delete: ${err.message}`);
-    } finally {
-      setDeleteModal({ show: false, item: null, path: [] });
-      setIsDeletingItem(false);
-    }
-  };
+  const handleDelete = async () => deleteItem({
+    deleteModal,
+    setDeleteModal,
+    setIsDeletingItem,
+    deleteEncryptedFile,
+    deleteFolder,
+    roomLink,
+    fileTree,
+    setFileTree,
+    setAllFileContents,
+    openTabs,
+    setOpenTabs,
+    activeFile,
+    setActiveFile,
+    setEditorContent,
+    editorContentRef,
+    realtimeChannelRef,
+    currentUserId,
+    showToast
+  });
 
   const handleSendMessage = () => {
     if (!chatInput.trim()) return;
@@ -2412,15 +2009,41 @@ export default function CodeEditorPage() {
     if (!isOwner) return;
 
     try {
-      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
+      const roomRow = await supabase
+        .from("rooms")
+        .select("id")
+        .eq("room_link", roomLink)
+        .eq("active", true)
+        .maybeSingle();
 
-      const { error } = await supabase
+      if (roomRow.error || !roomRow.data?.id) {
+        throw new Error("Room is inactive or unavailable");
+      }
+      const roomId = roomRow.data.id;
+
+      const kickedPayload = {
+        kicked_user: {
+          kicked: true,
+          kicker_user: true,
+          kicker_id: currentUserId || roomOwnerId || null,
+          kicked_at: new Date().toISOString()
+        },
+      };
+
+      let { error } = await supabase
         .from('room_members')
-        .update({
-          kicked_user: { kicked: true, kicked_at: new Date().toISOString() }
-        })
+        .update(kickedPayload)
         .eq('room_id', roomId)
         .eq('user_id', userId);
+
+      if (error) {
+        const fallback = await supabase
+          .from('room_members')
+          .update({ kicked_user: true })
+          .eq('room_id', roomId)
+          .eq('user_id', userId);
+        error = fallback.error;
+      }
 
       if (error) {
         console.error('Kick user database error:', error);
@@ -2438,56 +2061,73 @@ export default function CodeEditorPage() {
 
       // Remove from connected users list
       setConnectedUsers(prev => prev.filter(u => u.userId !== userId));
+      showToast('User has been removed from the room.', 'success', 2500);
 
-      alert('User has been removed from the room.');
     } catch (err) {
       console.error('Failed to kick user:', err);
-      alert(`Failed to remove user: ${err.message}`);
+      showToast(`Failed to remove user: ${err.message}`, 'error', 2500);
     }
   };
 
-  const handleMakeAdmin = async (userId) => {
+  const handleMakeAdmin = async (targetUserId) => {
     if (!isOwner) return;
 
     try {
-      const roomId = (await supabase.from("rooms").select("id").eq("room_link", roomLink).single()).data.id;
-
-      const { error } = await supabase
-        .from('room_members')
-        .update({ role: 'admin' })
-        .eq('room_id', roomId)
-        .eq('user_id', userId);
-
-      if (error) {
-        console.error('Make admin database error:', error);
-        throw error;
-      }
-
-      const { data: verifyData, error: verifyError } = await supabase
-        .from('room_members')
-        .select('role')
-        .eq('room_id', roomId)
-        .eq('user_id', userId)
+      //]]\
+      const { data: roomData, error: roomError } = await supabase
+        .from("rooms")
+        .select("id")
+        .eq("room_link", roomLink)
+        .eq("active", true)
         .single();
 
-      if (verifyError || verifyData.role !== 'admin') {
-        throw new Error('Failed to verify admin promotion');
+      if (roomError || !roomData) {
+        throw new Error("Room not found or access denied");
       }
 
-      // Update connected users
-      setConnectedUsers(prev => prev.map(u =>
-        u.userId === userId ? { ...u, role: 'admin' } : u
-      ));
+      const roomId = roomData.id;
 
-      alert('User has been promoted to admin successfully.');
+      // 2️⃣ Update role → admin
+      const { error: updateError } = await supabase
+        .from("room_members")
+        .update({ role: "admin" })
+        .eq("room_id", roomId)
+        .eq("user_id", targetUserId);
 
-      // Reload files to get fresh data
+      if (updateError) {
+        throw updateError;
+      }
+
+      // 3️⃣ Verify (optional but good for debugging)
+      const { data: verifyData, error: verifyError } = await supabase
+        .from("room_members")
+        .select("role")
+        .eq("room_id", roomId)
+        .eq("user_id", targetUserId)
+        .single();
+
+      if (verifyError || verifyData?.role !== "admin") {
+        throw new Error("Failed to verify admin promotion");
+      }
+
+      // 4️⃣ Update local state
+      setConnectedUsers(prev =>
+        prev.map(u =>
+          u.userId === targetUserId ? { ...u, role: "admin" } : u
+        )
+      );
+
+      showToast("User has been promoted to admin successfully.", 'success', 2500);
+
+      // 5️⃣ Reload files
       await loadFilesFromServer();
+
     } catch (err) {
-      console.error('Failed to make admin:', err);
-      alert(`Failed to promote user: ${err.message}`);
+      console.error("Failed to make admin:", err);
+      showToast(`Failed to promote user: ${err.message || 'Unknown error'}`, 'error', 2500);
     }
   };
+
 
   const handleChangePassword = async (newPassword) => {
     if (!isOwner) return;
@@ -2496,14 +2136,15 @@ export default function CodeEditorPage() {
       const { error } = await supabase
         .from('rooms')
         .update({ room_password: newPassword || null })
-        .eq('room_link', roomLink);
+        .eq('room_link', roomLink)
+        .eq('active', true);
 
       if (error) throw error;
 
-      alert('Room password has been changed successfully.');
+      showToast('Room password has been changed successfully.', 'success', 2500);
     } catch (err) {
       console.error('Failed to change password:', err);
-      alert(`Failed to change password: ${err.message}`);
+      showToast(`Failed to change password: ${err.message}`, 'error', 2500);
     }
   };
 
@@ -2511,21 +2152,22 @@ export default function CodeEditorPage() {
     if (!isOwner) return;
     const trimmed = roomName.trim();
     if (!trimmed) {
-      alert('Room name cannot be empty.');
+      showToast('Room name cannot be empty.', 'error', 2500);
       return;
     }
     try {
       const { error } = await supabase
         .from('rooms')
         .update({ room_name: trimmed })
-        .eq('room_link', roomLink);
+        .eq('room_link', roomLink)
+        .eq('active', true);
 
       if (error) throw error;
       setRoomName(trimmed);
       setIsEditingRoomName(false);
     } catch (err) {
       console.error('Failed to update room name:', err);
-      alert(`Failed to update room name: ${err.message}`);
+      showToast(`Failed to update room name: ${err.message}`, 'error', 2500);
     }
   };
 
@@ -2534,220 +2176,40 @@ export default function CodeEditorPage() {
     const confirmed = window.confirm('Delete this room? This cannot be undone.');
     if (!confirmed) return;
 
-    try {
-      const { error } = await supabase
-        .from('rooms')
-        .delete()
-        .eq('room_link', roomLink);
+    deleteRoom(roomLink)
 
-      if (error) throw error;
-      alert('Room deleted.');
-      window.location.href = '/create-room';
-    } catch (err) {
-      console.error('Failed to delete room:', err);
-      alert(`Failed to delete room: ${err.message}`);
-    }
+
+
   };
 
-  const pickDownloadPath = async () => {
-    if (isPickingDownloadPath) return;
-    setIsPickingDownloadPath(true);
-    try {
-      if (window.flutter_inappwebview?.callHandler) {
-        const result = await window.flutter_inappwebview.callHandler('pickDownloadPath');
-        if (result?.success && result?.path) {
-          setDownloadPath(result.path);
-          const saveResult = await saveDownloadPath(result.path);
-          if (!saveResult.success) {
-            alert(`Failed to save: ${saveResult.error}`);
-          } else if (result?.warning) {
-            alert(result.warning);
-          } else {
-            await syncFilesToLocalPath();
-          }
-        } else if (result?.error) {
-          alert(result.error);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to pick download path:', err);
-      alert(`Failed to pick download path: ${err.message}`);
-    } finally {
-      setIsPickingDownloadPath(false);
-    }
-  };
+  const getDownloadCtx = () => ({
+    isPickingDownloadPath,
+    setIsPickingDownloadPath,
+    setDownloadPath,
+    saveDownloadPath,
+    downloadPath,
+    isSyncingLocal,
+    setIsSyncingLocal,
+    lastLocalSyncTimeRef,
+    lastLocalSyncRef,
+    hasInitialLocalSyncRef,
+    fileTree,
+    allFileContents,
+    readEncryptedFile,
+    roomName,
+    isDownloadingZip,
+    setIsDownloadingZip,
+    lastZipDownloadRef,
+    roomLink,
+    getRoomFiles,
+    currentPlatform
+  });
 
-  const handleSaveToDevice = async () => {
-    if (isDownloadingZip) return;
-    if (currentPlatform === 'web') {
-      await handleDownloadProjectZip();
-      return;
-    }
-    await syncFilesToLocalPath();
-  };
+  const pickDownloadPath = async () => pickDownloadPathExternal(getDownloadCtx());
 
-  const hashString = (value) => {
-    let hash = 0;
-    for (let i = 0; i < value.length; i += 1) {
-      hash = ((hash << 5) - hash) + value.charCodeAt(i);
-      hash |= 0;
-    }
-    return hash.toString();
-  };
+  const handleSaveToDevice = async () => handleSaveToDeviceExternal(getDownloadCtx());
 
-  const collectFilesFromTree = (node, parentPath = '') => {
-    if (!node) return [];
-    const files = [];
-    if (node.type === 'file') {
-      const path = node.repoPath || (parentPath ? `${parentPath}/${node.name}` : node.name);
-      files.push({
-        id: node.id,
-        path,
-        storagePath: node.fullPath,
-        name: node.name
-      });
-      return files;
-    }
-    if (node.type === 'folder' && node.children) {
-      const nextPath = node.name === 'project' ? parentPath : (parentPath ? `${parentPath}/${node.name}` : node.name);
-      node.children.forEach((child) => {
-        files.push(...collectFilesFromTree(child, nextPath));
-      });
-    }
-    return files;
-  };
-
-  const syncFilesToLocalPath = async () => {
-    if (!downloadPath) {
-      alert('Please set a download path first.');
-      return;
-    }
-    if (isSyncingLocal) return;
-    setIsSyncingLocal(true);
-
-    const now = Date.now();
-    if (now - lastLocalSyncTimeRef.current < 5000) {
-      alert('Please wait a few seconds before syncing again.');
-      setIsSyncingLocal(false);
-      return;
-    }
-    lastLocalSyncTimeRef.current = now;
-
-    const files = collectFilesFromTree(fileTree);
-    const lastMap = lastLocalSyncRef.current || {};
-    const currentMap = {};
-    const upserts = [];
-    const deletes = [];
-
-    for (const file of files) {
-      const content = allFileContents[file.id] ?? await readEncryptedFile(file.storagePath);
-      const hash = hashString(content || '');
-      currentMap[file.id] = { path: file.path, hash };
-
-      const prev = lastMap[file.id];
-      const isFirst = !hasInitialLocalSyncRef.current;
-      const changed = !prev || prev.hash !== hash || prev.path !== file.path;
-
-      if (isFirst || changed) {
-        upserts.push({ path: file.path, content: content || '' });
-        if (prev && prev.path && prev.path !== file.path) {
-          deletes.push(prev.path);
-        }
-      }
-    }
-
-    if (hasInitialLocalSyncRef.current) {
-      Object.keys(lastMap).forEach((id) => {
-        if (!currentMap[id]) {
-          deletes.push(lastMap[id].path);
-        }
-      });
-    }
-
-    if (upserts.length === 0 && deletes.length === 0) {
-      return;
-    }
-
-    const payload = {
-      basePath: downloadPath,
-      upserts,
-      deletes,
-      roomName: roomName || 'codesync'
-    };
-
-    try {
-      if (window.flutter_inappwebview?.callHandler) {
-        const result = await window.flutter_inappwebview.callHandler('saveProject', payload);
-        console.log('[CodeSync] saveProject result:', result);
-        if (result?.path && result.path !== downloadPath) {
-          setDownloadPath(result.path);
-          await saveDownloadPath(result.path);
-        }
-        if (result?.warning) {
-          alert(result.warning);
-        }
-      } else if (window.electron?.saveProject) {
-        await window.electron.saveProject(payload);
-      } else {
-        console.warn('No native handler for saveProject');
-      }
-      lastLocalSyncRef.current = currentMap;
-      hasInitialLocalSyncRef.current = true;
-    } catch (err) {
-      console.error('Local sync failed:', err);
-      alert(`Local sync failed: ${err.message}`);
-    } finally {
-      setIsSyncingLocal(false);
-    }
-  };
-
-  const handleDownloadProjectZip = async () => {
-    if (isDownloadingZip) return;
-    const now = Date.now();
-    if (now - lastZipDownloadRef.current < 10000) {
-      alert('Please wait a few seconds before downloading again.');
-      return;
-    }
-    lastZipDownloadRef.current = now;
-    setIsDownloadingZip(true);
-
-    try {
-      const files = await getRoomFiles(roomLink);
-      if (!files || files.length === 0) {
-        alert('No files found in this room.');
-        return;
-      }
-
-      const zip = new JSZip();
-      const paths = files.map((file) => {
-        const baseName = file.extension ? `${file.name}.${file.extension}` : file.name;
-        return {
-          path: file.folderPath ? `${file.folderPath}/${baseName}` : baseName,
-          storagePath: file.storagePath
-        };
-      }).sort((a, b) => a.path.localeCompare(b.path));
-
-      for (const item of paths) {
-        const content = await readEncryptedFile(item.storagePath);
-        zip.file(item.path, content || '');
-      }
-
-      const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${roomName || 'project'}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error('Failed to download zip:', err);
-      alert(`Failed to download zip: ${err.message}`);
-    } finally {
-      setIsDownloadingZip(false);
-    }
-  };
+  const handleDownloadProjectZip = async () => handleDownloadProjectZipExternal(getDownloadCtx());
 
   const isOwner = userRole === 'owner' || currentUserId === roomOwnerId;
   const isAdmin = userRole === 'admin' || isOwner;
@@ -3014,11 +2476,10 @@ export default function CodeEditorPage() {
               <button
                 onClick={handleSaveToDevice}
                 disabled={!canEdit || isDownloadingZip || isSyncingLocal}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${
-                  isDownloadingZip || isSyncingLocal
-                    ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-                    : 'bg-slate-700 hover:bg-slate-600 text-white'
-                }`}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${isDownloadingZip || isSyncingLocal
+                  ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                  : 'bg-slate-700 hover:bg-slate-600 text-white'
+                  }`}
                 title={isDownloadingZip ? 'Preparing download...' : 'Save Offline'}
               >
                 {isDownloadingZip || isSyncingLocal ? (
@@ -3032,11 +2493,10 @@ export default function CodeEditorPage() {
                 <button
                   onClick={handlePushToGitHub}
                   disabled={isPushingToGitHub}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${
-                    isPushingToGitHub
-                      ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-                      : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
-                  }`}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${isPushingToGitHub
+                    ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                    : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
+                    }`}
                   title="Push to GitHub"
                 >
                   {isPushingToGitHub ? (
@@ -3051,11 +2511,10 @@ export default function CodeEditorPage() {
                 <button
                   onClick={handleRunCode}
                   disabled={!canEdit || isRunning || !activeFile}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${
-                    canEdit && !isRunning && activeFile
-                      ? 'primary-button text-white'
-                      : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-                  }`}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${canEdit && !isRunning && activeFile
+                    ? 'primary-button text-white'
+                    : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                    }`}
                   title="Run Code"
                 >
                   {isRunning ? (
@@ -3071,11 +2530,10 @@ export default function CodeEditorPage() {
             <button
               onClick={handleSaveOffline}
               disabled={!canEdit || isSaving || dirtyCount === 0}
-              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg transition-all modern-button relative ${
-                canEdit && !isSaving && dirtyCount > 0
-                  ? 'primary-button text-white'
-                  : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
-              }`}
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg transition-all modern-button relative ${canEdit && !isSaving && dirtyCount > 0
+                ? 'primary-button text-white'
+                : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
+                }`}
               title={
                 isSaving ? 'Saving...' :
                   dirtyCount > 0 ? `Save ${dirtyCount} file(s)` :
@@ -3291,11 +2749,10 @@ export default function CodeEditorPage() {
                   setBottomPanelMode('terminal');
                   setShowBottomPanel(true);
                 }}
-                className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 rounded-lg transition-all modern-button ${
-                  bottomPanelMode === 'terminal' && showBottomPanel
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                    : 'hover:bg-slate-700/50 text-slate-400'
-                }`}
+                className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 rounded-lg transition-all modern-button ${bottomPanelMode === 'terminal' && showBottomPanel
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                  : 'hover:bg-slate-700/50 text-slate-400'
+                  }`}
               >
                 <TerminalIcon className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Terminal</span>
@@ -3306,11 +2763,10 @@ export default function CodeEditorPage() {
                   setShowBottomPanel(true);
                   setHasNewMessage(false);
                 }}
-                className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 rounded-lg transition-all modern-button relative ${
-                  bottomPanelMode === 'chat' && showBottomPanel
-                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
-                    : 'hover:bg-slate-700/50 text-slate-400'
-                }`}
+                className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 rounded-lg transition-all modern-button relative ${bottomPanelMode === 'chat' && showBottomPanel
+                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
+                  : 'hover:bg-slate-700/50 text-slate-400'
+                  }`}
               >
                 <MessageCircle className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Chat</span>
@@ -3355,27 +2811,24 @@ export default function CodeEditorPage() {
                           <span className="hidden sm:inline text-[10px] text-slate-400 uppercase tracking-wider">Run</span>
                           <button
                             onClick={() => setRunMode('auto')}
-                            className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${
-                              runMode === 'auto' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-slate-200'
-                            }`}
+                            className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${runMode === 'auto' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-slate-200'
+                              }`}
                             title="Auto: Local only when input or ES module is detected"
                           >
                             Auto
                           </button>
                           <button
                             onClick={() => setRunMode('local')}
-                            className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${
-                              runMode === 'local' ? 'bg-blue-500/20 text-blue-300' : 'text-slate-400 hover:text-slate-200'
-                            }`}
+                            className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${runMode === 'local' ? 'bg-blue-500/20 text-blue-300' : 'text-slate-400 hover:text-slate-200'
+                              }`}
                             title="Force local runtime"
                           >
                             Local
                           </button>
                           <button
                             onClick={() => setRunMode('api')}
-                            className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${
-                              runMode === 'api' ? 'bg-purple-500/20 text-purple-300' : 'text-slate-400 hover:text-slate-200'
-                            }`}
+                            className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${runMode === 'api' ? 'bg-purple-500/20 text-purple-300' : 'text-slate-400 hover:text-slate-200'
+                              }`}
                             title="Force cloud runner"
                           >
                             API
@@ -3384,9 +2837,8 @@ export default function CodeEditorPage() {
                         <button
                           onClick={killRunningProcess}
                           disabled={!isRunning}
-                          className={`p-1 rounded transition-all modern-button ${
-                            isRunning ? 'hover:bg-red-500/20 text-red-300' : 'text-slate-600 cursor-not-allowed'
-                          }`}
+                          className={`p-1 rounded transition-all modern-button ${isRunning ? 'hover:bg-red-500/20 text-red-300' : 'text-slate-600 cursor-not-allowed'
+                            }`}
                           title="Kill Running Process"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -3413,29 +2865,19 @@ export default function CodeEditorPage() {
                         </button>
                       </div>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1 min-h-0">
-                      {htmlPreviewUrl ? (
-                        <div className="w-full h-full min-h-[200px]">
-                          <iframe
-                            title="HTML Preview"
-                            src={htmlPreviewUrl}
-                            className="w-full h-full rounded-lg border border-slate-700/60 bg-black"
-                          />
-                        </div>
-                      ) : (
+                      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1 min-h-0">
                         <>
                           {terminalOutput.map((output, idx) => (
                             <div
                               key={idx}
-                              className={`${
-                                output.type === 'error'
-                                  ? 'text-red-400'
-                                  : output.type === 'system'
+                              className={`${output.type === 'error'
+                                ? 'text-red-400'
+                                : output.type === 'system'
                                   ? 'text-blue-400'
                                   : output.type === 'link'
-                                  ? 'text-emerald-300'
-                                  : 'text-slate-300'
-                              }`}
+                                    ? 'text-emerald-300'
+                                    : 'text-slate-300'
+                                }`}
                             >
                               {output.type === 'link' ? (
                                 <a
@@ -3453,8 +2895,7 @@ export default function CodeEditorPage() {
                           ))}
                           <div ref={terminalEndRef} />
                         </>
-                      )}
-                    </div>
+                      </div>
                     <div className="p-2 border-t border-slate-700/60 flex gap-2 flex-shrink-0">
                       {pendingRunRequest ? (
                         <>
@@ -3557,11 +2998,10 @@ export default function CodeEditorPage() {
                       <button
                         onClick={handleSendMessage}
                         disabled={!chatInput.trim()}
-                        className={`p-2 rounded-lg transition-all modern-button ${
-                          chatInput.trim()
-                            ? 'bg-blue-500 hover:bg-blue-600 text-white'
-                            : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
-                        }`}
+                        className={`p-2 rounded-lg transition-all modern-button ${chatInput.trim()
+                          ? 'bg-blue-500 hover:bg-blue-600 text-white'
+                          : 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
+                          }`}
                       >
                         <Send className="w-4 h-4" />
                       </button>
@@ -3788,7 +3228,7 @@ export default function CodeEditorPage() {
                                 if (result.success) {
                                   setIsEditingDownloadPath(false);
                                 } else {
-                                  alert(`Failed to save: ${result.error}`);
+                                  showToast(`Failed to save: ${result.error}`, 'error', 2500);
                                 }
                               }}
                               className="px-3 py-1.5 primary-button text-white rounded-lg text-sm modern-button"
@@ -3805,9 +3245,8 @@ export default function CodeEditorPage() {
                               <button
                                 onClick={pickDownloadPath}
                                 disabled={isPickingDownloadPath}
-                                className={`p-2 rounded-lg transition-all modern-button ${
-                                  isPickingDownloadPath ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed' : 'hover:bg-slate-700/50'
-                                }`}
+                                className={`p-2 rounded-lg transition-all modern-button ${isPickingDownloadPath ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed' : 'hover:bg-slate-700/50'
+                                  }`}
                                 title="Pick Folder"
                               >
                                 {isPickingDownloadPath ? (
@@ -3845,11 +3284,10 @@ export default function CodeEditorPage() {
                       <button
                         onClick={handleDownloadProjectZip}
                         disabled={isDownloadingZip}
-                        className={`px-4 py-2 rounded-lg text-sm transition-all modern-button ${
-                          isDownloadingZip
-                            ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
-                            : 'primary-button text-white'
-                        }`}
+                        className={`px-4 py-2 rounded-lg text-sm transition-all modern-button ${isDownloadingZip
+                          ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
+                          : 'primary-button text-white'
+                          }`}
                       >
                         {isDownloadingZip ? 'Preparing...' : 'Download Zip'}
                       </button>
@@ -4019,13 +3457,23 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
 
   if (!node) return null;
 
-  const isActive = activeFile?.id === node.id;
+  const isActive = activeFile?.id != null && node?.id != null && activeFile.id === node.id;
   const isOpening = openingFiles.has(node.id);
+  const nodeContextMenuKey = node?.id != null
+    ? `id:${node.id}`
+    : `path:${path.join('.')}:${node?.name || ''}`;
+
+  const closeContextMenu = () => {
+    setShowContextMenu(false);
+    if (openContextMenuId === nodeContextMenuKey) {
+      setOpenContextMenuId(null);
+    }
+  };
 
   const handleContextMenu = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    setOpenContextMenuId(node?.id || null);
+    setOpenContextMenuId(nodeContextMenuKey);
     setContextMenuPos({ x: e.clientX, y: e.clientY });
     setShowContextMenu(true);
   };
@@ -4043,7 +3491,7 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
     const touch = e.touches?.[0];
     if (!touch) return;
     longPressTimerRef.current = setTimeout(() => {
-      setOpenContextMenuId(node?.id || null);
+      setOpenContextMenuId(nodeContextMenuKey);
       setContextMenuPos({ x: touch.clientX, y: touch.clientY });
       setShowContextMenu(true);
     }, 450);
@@ -4059,17 +3507,16 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
 
   useEffect(() => {
     if (!showContextMenu) return;
-    if (openContextMenuId && openContextMenuId !== node?.id) {
+    if (openContextMenuId !== nodeContextMenuKey) {
       setShowContextMenu(false);
     }
-  }, [openContextMenuId, node?.id, showContextMenu]);
+  }, [openContextMenuId, nodeContextMenuKey, showContextMenu]);
 
   return (
     <>
       <div
-        className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
-          isActive ? 'bg-emerald-500/15 text-emerald-400' : 'hover:bg-slate-700/30 text-slate-300'
-        }`}
+        className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${isActive ? 'bg-emerald-500/15 text-emerald-400' : 'hover:bg-slate-700/30 text-slate-300'
+          }`}
         style={{ paddingLeft: `${path.length * 12 + 8}px` }}
         onClick={() => {
           if (node.type === 'folder') {
@@ -4125,7 +3572,7 @@ function FileTreeNode({ node, path, onToggle, onOpenFile, activeFile, onRename, 
         <ContextMenu
           x={contextMenuPos.x}
           y={contextMenuPos.y}
-          onClose={() => setShowContextMenu(false)}
+          onClose={closeContextMenu}
           node={node}
           path={path}
           onRename={onRename}
@@ -4152,53 +3599,57 @@ function ContextMenu({ x, y, onClose, node, path, onRename, onDelete, onCreateFi
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="fixed glass-strong rounded-lg shadow-2xl py-1 z-50 min-w-[120px] border border-slate-700"
+      className="fixed glass-strong rounded-lg shadow-2xl z-50 border border-slate-700 p-1 flex items-center gap-1 sm:block sm:min-w-[120px] sm:py-1"
       style={{ left: x, top: y }}
       onClick={(e) => e.stopPropagation()}
     >
       {node.type === 'folder' && canEdit && (
         <>
-          <button
-            onClick={() => {
-              onCreateFile(path);
-              onClose();
-            }}
-            className="w-full px-3 py-2 text-left text-xs hover:bg-slate-700/50 transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">New File</span>
-          </button>
-          <button
-            onClick={() => {
-              onCreateFolder(path);
-              onClose();
-            }}
-            className="w-full px-3 py-2 text-left text-xs hover:bg-slate-700/50 transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
-          >
-            <FolderPlus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">New Folder</span>
-          </button>
-          <div className="h-px bg-slate-700/50 my-1" />
+          <div className="flex items-center gap-1 sm:block sm:space-y-0">
+            <button
+              onClick={() => {
+                onCreateFile(path);
+                onClose();
+              }}
+              className="flex-1 px-3 py-2 text-left text-xs hover:bg-slate-700/50 rounded-md transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">New File</span>
+            </button>
+            <button
+              onClick={() => {
+                onCreateFolder(path);
+                onClose();
+              }}
+              className="flex-1 px-3 py-2 text-left text-xs hover:bg-slate-700/50 rounded-md transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
+            >
+              <FolderPlus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">New Folder</span>
+            </button>
+          </div>
+          <div className="w-px self-stretch bg-slate-700/50 mx-0.5 sm:w-auto sm:h-px sm:my-1 sm:mx-0" />
         </>
       )}
       {canEdit && (
-        <div className="flex items-center justify-between sm:block sm:space-y-0">
-          <button
-            onClick={() => {
-              onRename(node, path);
-              onClose();
-            }}
-            className="flex-1 px-3 py-2 text-left text-xs hover:bg-slate-700/50 transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
-          >
-            <Edit2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Rename</span>
-          </button>
+        <div className="flex items-center gap-1 sm:block sm:space-y-0">
+          {node.type !== 'folder' && (
+            <button
+              onClick={() => {
+                onRename(node, path);
+                onClose();
+              }}
+              className="flex-1 px-3 py-2 text-left text-xs hover:bg-slate-700/50 rounded-md transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
+            >
+              <Edit2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Rename</span>
+            </button>
+          )}
           <button
             onClick={() => {
               onDelete(node, path);
               onClose();
             }}
-            className="flex-1 px-3 py-2 text-left text-xs hover:bg-red-500/20 text-red-400 transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
+            className="flex-1 px-3 py-2 text-left text-xs hover:bg-red-500/20 text-red-400 rounded-md transition-colors flex items-center gap-2 justify-center sm:justify-start sm:w-full sm:px-3 sm:py-2"
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Delete</span>
@@ -4211,8 +3662,26 @@ function ContextMenu({ x, y, onClose, node, path, onRename, onDelete, onCreateFi
 
 // Create File Modal
 function CreateFileModal({ onClose, onCreate, parentPath, isCreating }) {
-  const [fileName, setFileName] = useState('');
-  const [extension, setExtension] = useState('js');
+  const [fileNameInput, setFileNameInput] = useState('');
+  const parseFileInput = (rawValue) => {
+    const value = rawValue.trim();
+    const dotIndex = value.lastIndexOf('.');
+    if (dotIndex <= 0 || dotIndex >= value.length - 1) {
+      return null;
+    }
+
+    const baseName = value.slice(0, dotIndex).trim();
+    const extension = value.slice(dotIndex + 1).trim().toLowerCase();
+
+    if (!baseName || !extension) {
+      return null;
+    }
+
+    return { baseName, extension };
+  };
+
+  const parsedFile = parseFileInput(fileNameInput);
+  const isCreateDisabled = !parsedFile || isCreating;
 
   return (
     <motion.div
@@ -4235,38 +3704,21 @@ function CreateFileModal({ onClose, onCreate, parentPath, isCreating }) {
             <label className="text-sm text-slate-400 block mb-2">File Name</label>
             <input
               type="text"
-              value={fileName}
-              onChange={(e) => setFileName(e.target.value)}
-              placeholder="index"
+              value={fileNameInput}
+              onChange={(e) => setFileNameInput(e.target.value)}
+              placeholder="main.js"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !isCreateDisabled && parsedFile) {
+                  onCreate(parsedFile.baseName, parsedFile.extension, parentPath);
+                }
+              }}
               className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500/50"
               autoFocus
               disabled={isCreating}
             />
-          </div>
-          <div>
-            <label className="text-sm text-slate-400 block mb-2">Extension</label>
-            <select
-              value={extension}
-              onChange={(e) => setExtension(e.target.value)}
-              className="w-full bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500/50"
-              disabled={isCreating}
-            >
-              <option value="js">JavaScript (.js)</option>
-              <option value="jsx">React (.jsx)</option>
-              <option value="ts">TypeScript (.ts)</option>
-              <option value="tsx">React TypeScript (.tsx)</option>
-              <option value="py">Python (.py)</option>
-              <option value="rb">Ruby (.rb)</option>
-              <option value="java">Java (.java)</option>
-              <option value="cpp">C++ (.cpp)</option>
-              <option value="c">C (.c)</option>
-              <option value="pl">Prolog (.pl)</option>
-              <option value="html">HTML (.html)</option>
-              <option value="css">CSS (.css)</option>
-              <option value="json">JSON (.json)</option>
-              <option value="md">Markdown (.md)</option>
-              <option value="txt">Text (.txt)</option>
-            </select>
+            {!parsedFile && fileNameInput.trim().length > 0 && (
+              <p className="text-xs text-amber-400 mt-2">Use full file name with extension, e.g. `main.js`</p>
+            )}
           </div>
           <div className="flex gap-2 justify-end">
             <button
@@ -4278,11 +3730,11 @@ function CreateFileModal({ onClose, onCreate, parentPath, isCreating }) {
             </button>
             <button
               onClick={() => {
-                if (fileName.trim()) {
-                  onCreate(fileName.trim(), extension, parentPath);
+                if (parsedFile) {
+                  onCreate(parsedFile.baseName, parsedFile.extension, parentPath);
                 }
               }}
-              disabled={!fileName.trim() || isCreating}
+              disabled={isCreateDisabled}
               className="px-4 py-2 primary-button text-white rounded-lg text-sm transition-all modern-button disabled:opacity-50 flex items-center gap-2"
             >
               {isCreating ? (
