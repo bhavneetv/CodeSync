@@ -16,15 +16,15 @@ const DownloadPage = () => {
     const downloadLinks = {
         windows: {
             drive: 'https://drive.google.com/your-windows-download-link',
-            github: 'https://github.com/your-repo/releases/latest'
+            github: 'https://github.com/bhavneetv/code-sync-flutter/releases/latest'
         },
         android: {
             drive: 'https://drive.google.com/your-android-download-link',
-            github: 'https://github.com/your-repo/releases/latest'
+            github: 'https://github.com/bhavneetv/code-sync-flutter/releases/latest'
         },
         ios: {
             drive: 'https://drive.google.com/your-ios-download-link',
-            github: 'https://github.com/your-repo/releases/latest'
+            github: 'https://github.com/bhavneetv/code-sync-flutter/releases/latest'
         },
         macos: {
             drive: '#',
