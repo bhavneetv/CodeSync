@@ -10,6 +10,7 @@ import {
   login,
   signup,
   loginWithGoogle,
+  loginWithGithubReturn,
   logout,
   getUser,
 } from "./function/login/auth.js";
@@ -269,6 +270,7 @@ const LoginPage = ({ onSwitchToSignup, onSwitchToReset }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const isInAppWebView = typeof window !== 'undefined' && !!window.flutter_inappwebview;
 
   const validateEmail = (email) => {
     const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -298,6 +300,7 @@ const LoginPage = ({ onSwitchToSignup, onSwitchToReset }) => {
       } else {
         console.log("Login success:", value);
         showToast("Success", "Logged in successfully!", "success");
+        window.location.href = '/create-room';
       }
     } catch (err) {
       setError('An unexpected error occurred');
@@ -309,7 +312,11 @@ const LoginPage = ({ onSwitchToSignup, onSwitchToReset }) => {
   const handleSocialLogin = async (provider) => {
     setLoading(true);
     try {
-      await loginWithGoogle(provider);
+      if (provider === 'GitHub') {
+        await loginWithGithubReturn('/create-room');
+        return;
+      }
+      await loginWithGoogle('/create-room');
     } catch (err) {
       setError(`Failed to login with ${provider}`);
     } finally {
@@ -468,6 +475,11 @@ const LoginPage = ({ onSwitchToSignup, onSwitchToReset }) => {
               </svg>
             </LoadingButton>
           </div>
+          {isInAppWebView && (
+            <p className="text-[11px] text-amber-300 mb-5">
+              Google login opens your browser and returns to the app automatically.
+            </p>
+          )}
 
           {/* Switch to Signup */}
           <div className="text-center">
@@ -497,6 +509,7 @@ const SignupPage = ({ onSwitchToLogin }) => {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const isInAppWebView = typeof window !== 'undefined' && !!window.flutter_inappwebview;
 
   const validateEmail = (email) => {
     const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -536,6 +549,7 @@ const SignupPage = ({ onSwitchToLogin }) => {
       } else {
         console.log("Signup success:", value);
         showToast("Success", "Account created successfully!", "success");
+        window.location.href = '/create-room';
       }
     } catch (err) {
       setError('An unexpected error occurred');
@@ -547,7 +561,11 @@ const SignupPage = ({ onSwitchToLogin }) => {
   const handleSocialLogin = async (provider) => {
     setLoading(true);
     try {
-      await loginWithGoogle(provider);
+      if (provider === 'GitHub') {
+        await loginWithGithubReturn('/create-room');
+        return;
+      }
+      await loginWithGoogle('/create-room');
     } catch (err) {
       setError(`Failed to signup with ${provider}`);
     } finally {
@@ -773,6 +791,11 @@ const SignupPage = ({ onSwitchToLogin }) => {
               </svg>
             </LoadingButton>
           </div>
+          {isInAppWebView && (
+            <p className="text-[11px] text-amber-300 mb-5">
+              Google signup opens your browser and returns to the app automatically.
+            </p>
+          )}
 
           {/* Switch to Login */}
           <div className="text-center">

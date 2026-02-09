@@ -36,7 +36,6 @@ export async function pickDownloadPath(ctx) {
   const {
     isPickingDownloadPath,
     setIsPickingDownloadPath,
-    setDownloadPath,
     saveDownloadPath
   } = ctx;
 
@@ -46,14 +45,15 @@ export async function pickDownloadPath(ctx) {
     if (window.flutter_inappwebview?.callHandler) {
       const result = await window.flutter_inappwebview.callHandler('pickDownloadPath');
       if (result?.success && result?.path) {
-        setDownloadPath(result.path);
         const saveResult = await saveDownloadPath(result.path);
         if (!saveResult.success) {
           showToast(`Failed to save: ${saveResult.error}`, 'error', 2500);
-        } else if (result?.warning) {
-          showToast(result.warning, 'info', 2500);
         } else {
-          await syncFilesToLocalPath(ctx);
+          if (result?.warning) {
+            showToast(result.warning, 'info', 2500);
+          }
+          // Use the selected path immediately to avoid first-save race with async React state updates.
+          await syncFilesToLocalPath({ ...ctx, downloadPath: result.path });
         }
       } else if (result?.error) {
         showToast(result.error, 'error', 2500);
@@ -140,6 +140,7 @@ export async function syncFilesToLocalPath(ctx) {
   }
 
   if (upserts.length === 0 && deletes.length === 0) {
+    setIsSyncingLocal(false);
     return;
   }
 

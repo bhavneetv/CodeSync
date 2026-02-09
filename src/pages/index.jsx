@@ -27,6 +27,41 @@ const LandingPage = () => {
   });
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const appRedirect = params.get("app_redirect");
+    if (appRedirect && /^codesync:\/\//i.test(appRedirect)) {
+      const forwardParams = new URLSearchParams(window.location.search);
+      forwardParams.delete("app_redirect");
+      const forwardQuery = forwardParams.toString();
+      const hash = window.location.hash || "";
+      const separator = appRedirect.includes("?") ? "&" : "?";
+      const target = `${appRedirect}${forwardQuery ? `${separator}${forwardQuery}` : ""}${hash}`;
+      const oauthReturn = params.get("oauth_return");
+      const webFallback =
+        oauthReturn && oauthReturn.startsWith("/") ? oauthReturn : "/create-room";
+
+      window.location.replace(target);
+      // Retry once if the browser blocked the first custom-scheme navigation.
+      setTimeout(() => {
+        if (document.visibilityState === "visible") {
+          window.location.href = target;
+        }
+      }, 500);
+      // Keep users unblocked in browser if app reopen failed.
+      setTimeout(() => {
+        if (document.visibilityState === "visible") {
+          window.location.href = webFallback;
+        }
+      }, 2200);
+      return;
+    }
+
+    const oauthReturn = params.get("oauth_return");
+    if (oauthReturn && oauthReturn.startsWith("/")) {
+      window.location.href = oauthReturn;
+      return;
+    }
+
     if(sessionStorage.getItem("github_oauth_state")) {
       const sess = sessionStorage.getItem("github_oauth_state");
       const sessObj = JSON.parse(sess);

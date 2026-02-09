@@ -179,7 +179,7 @@ const RoomCreate = () => {
 
   // Handle Login
   const handleLogin = async () => {
-    await loginWithGithub();
+    window.location.href = "/login";
   };
 
   const handleGithubConnect = async () => {

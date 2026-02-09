@@ -115,6 +115,7 @@ export const handleRoomJoin = async (
     }
 
     const user = (await supabase.auth.getUser()).data.user;
+    const isAnonymousUser = !!user?.is_anonymous;
 
 
     const { data: room } = await supabase
@@ -153,18 +154,22 @@ export const handleRoomJoin = async (
         if (isKickedMember(member.kicked_user)) {
             return { status: "kicked" };
         }
+        const updatePayload = {
+            join_token: token,
+            joined_at: new Date()
+        };
+        if (!isAnonymousUser && member.role === "guest") {
+            updatePayload.role = "editor";
+        }
         await supabase
             .from("room_members")
-            .update({
-                join_token: token,
-                joined_at: new Date()
-            })
+            .update(updatePayload)
             .eq("id", member.id);
     } else {
         await supabase.from("room_members").insert({
             room_id: room.id,
             user_id: user.id,
-            role: "guest",
+            role: isAnonymousUser ? "guest" : "editor",
             join_token: token
         });
     }

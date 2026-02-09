@@ -294,7 +294,8 @@ export default function CodeEditorPage() {
 
   const roomLink = new URLSearchParams(window.location.search).get("roomId");
   const currentPlatform = getPlatform();
-  const isDownloadPathSupported = currentPlatform === 'mobile-app' || currentPlatform === 'windows-app';
+  const isExecutablePlatform = currentPlatform === 'mobile-app' || currentPlatform === 'windows-app';
+  const isDownloadPathSupported = isExecutablePlatform;
 
   const fetchRoomAccess = async () => {
     const roomInfo = await isRoomValid(roomLink);
@@ -377,10 +378,24 @@ export default function CodeEditorPage() {
         .select('download_path')
         .eq('room_id', roomId)
         .eq('join_token', token)
-        .single();
+        .maybeSingle();
 
-      if (!error && data?.download_path) {
-        setDownloadPath(data.download_path);
+      let resolvedPath = (!error && data?.download_path) ? data.download_path : '';
+
+      if (!resolvedPath && userId) {
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('room_members')
+          .select('download_path')
+          .eq('room_id', roomId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (!fallbackError && fallbackData?.download_path) {
+          resolvedPath = fallbackData.download_path;
+        }
+      }
+
+      if (resolvedPath) {
+        setDownloadPath(resolvedPath);
       }
     } catch (err) {
       showToast('Failed to load download path. Please try again later.', 'error', 2500);
@@ -410,13 +425,30 @@ export default function CodeEditorPage() {
       }
       const roomId = roomRow.data.id;
 
-      const { error } = await supabase
+      const { data: byToken, error } = await supabase
         .from('room_members')
         .update({ download_path: path })
         .eq('room_id', roomId)
-        .eq('join_token', token);
+        .eq('join_token', token)
+        .select('id');
 
       if (error) throw error;
+
+      let updatedRows = byToken?.length || 0;
+      if (updatedRows === 0 && currentUserId) {
+        const { data: byUser, error: fallbackError } = await supabase
+          .from('room_members')
+          .update({ download_path: path })
+          .eq('room_id', roomId)
+          .eq('user_id', currentUserId)
+          .select('id');
+        if (fallbackError) throw fallbackError;
+        updatedRows = byUser?.length || 0;
+      }
+
+      if (updatedRows === 0) {
+        throw new Error('Unable to persist download path for current session.');
+      }
 
       setDownloadPath(path);
       return { success: true };
@@ -1395,25 +1427,181 @@ export default function CodeEditorPage() {
     handleSaveOffline
   });
 
-  const getRuntimeWsUrl = () => {
-    if (import.meta?.env?.VITE_RUNTIME_WS_URL) {
-      const raw = import.meta.env.VITE_RUNTIME_WS_URL;
-      if (raw.startsWith('https://')) return raw.replace('https://', 'wss://');
-      if (raw.startsWith('http://')) return raw.replace('http://', 'ws://');
-      return raw;
+  const normalizeRuntimeWsUrl = (raw) => {
+    if (!raw) return '';
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+
+    if (trimmed.startsWith('https://')) return trimmed.replace('https://', 'wss://');
+    if (trimmed.startsWith('http://')) return trimmed.replace('http://', 'ws://');
+
+    if (trimmed.startsWith('wss://')) return trimmed;
+    if (trimmed.startsWith('ws://')) {
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+        return trimmed.replace('ws://', 'wss://');
+      }
+      return trimmed;
     }
-    if (typeof window === 'undefined') return 'ws://localhost:3001';
-    const host = window.location.hostname || 'localhost';
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${protocol}://${host}:8080`;
+
+    if (trimmed.startsWith('//')) {
+      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}${trimmed}`;
+    }
+
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${protocol}://${trimmed}`;
   };
 
+  const getRuntimeWsCandidates = () => {
+    const candidates = [];
+    const fromEnv = normalizeRuntimeWsUrl(import.meta?.env?.VITE_RUNTIME_WS_URL || '');
+    const defaultCloudRuntime = 'wss://codesync-server-production-edf0.up.railway.app';
+
+    if (fromEnv) {
+      candidates.push(fromEnv);
+    }
+
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname || 'localhost';
+      const pageProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      // Preferred local runtime port used by runtime-server/server/index.js
+      candidates.push(`${pageProtocol}://${host}:3001`);
+      // Legacy runtime port fallback
+      candidates.push(`${pageProtocol}://${host}:8080`);
+
+      // Desktop/mobile app containers often need explicit localhost candidates.
+      candidates.push('ws://127.0.0.1:3001');
+      candidates.push('ws://localhost:3001');
+    } else {
+      candidates.push('ws://localhost:3001');
+      candidates.push('ws://localhost:8080');
+    }
+
+    candidates.push(defaultCloudRuntime);
+
+    // iOS WebView is stricter with insecure mixed-content websocket URLs.
+    if (currentPlatform === 'mobile-app' && /iphone|ipad|ipod/i.test(window.navigator.userAgent || '')) {
+      return [...new Set(candidates.filter((url) => url.startsWith('wss://')))];
+    }
+
+    return [...new Set(candidates)];
+  };
+
+  const getRuntimeWsUrl = () => getRuntimeWsCandidates()[0] || 'wss://codesync-server-production-edf0.up.railway.app';
+
   const getRuntimeHttpUrl = () => {
-    const wsUrl = getRuntimeWsUrl();
+    const wsUrl = runtimeSocketRef.current?.url || getRuntimeWsUrl();
     if (wsUrl.startsWith('wss://')) return wsUrl.replace('wss://', 'https://');
     if (wsUrl.startsWith('ws://')) return wsUrl.replace('ws://', 'http://');
     return wsUrl;
   };
+
+  const attachRuntimeSocketHandlers = (socket) => {
+    socket.onclose = () => {
+      runtimeSocketRef.current = null;
+    };
+
+    socket.onmessage = (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (msg.type === 'preview') {
+        const pending = previewRequestRef.current;
+        if (pending && msg.requestId === pending.requestId) {
+          clearTimeout(pending.timeout);
+          previewRequestRef.current = null;
+          const baseUrl = getRuntimeHttpUrl();
+          const previewUrl = msg.url?.startsWith('http')
+            ? msg.url
+            : `${baseUrl}${msg.url || ''}`;
+          setHtmlPreviewUrl(previewUrl);
+          setTerminalOutput(prev => [...prev, {
+            type: 'link',
+            content: previewUrl,
+            timestamp: new Date()
+          }]);
+          pending.resolve(previewUrl);
+        }
+        return;
+      }
+
+      if (msg.type === 'preview-error') {
+        const pending = previewRequestRef.current;
+        if (pending && msg.requestId === pending.requestId) {
+          clearTimeout(pending.timeout);
+          previewRequestRef.current = null;
+          pending.reject(new Error(msg.data || 'Failed to create preview'));
+        }
+        return;
+      }
+
+      if (msg.type === 'stdout') {
+        setTerminalOutput(prev => [...prev, {
+          type: 'output',
+          content: msg.data,
+          timestamp: new Date()
+        }]);
+      } else if (msg.type === 'stderr' || msg.type === 'error') {
+        setTerminalOutput(prev => [...prev, {
+          type: 'error',
+          content: msg.data,
+          timestamp: new Date()
+        }]);
+        if (msg.type === 'error') {
+          clearRunTimeout();
+          setIsRunning(false);
+          setIsInteractiveRun(false);
+          if (pendingFallbackRun) {
+            const { payload, runLabel } = pendingFallbackRun;
+            setPendingFallbackRun(null);
+            executeRun(payload, runLabel);
+          }
+        }
+      } else if (msg.type === 'exit') {
+        clearRunTimeout();
+        setIsRunning(false);
+        setIsInteractiveRun(false);
+        setPendingFallbackRun(null);
+        setTerminalOutput(prev => [...prev, {
+          type: 'system',
+          content: '$ Process completed.',
+          timestamp: new Date()
+        }]);
+      }
+    };
+  };
+
+  const connectRuntimeSocketOnce = (url) => new Promise((resolve, reject) => {
+    try {
+      const socket = new WebSocket(url);
+      const timeout = setTimeout(() => {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+        reject(new Error(`Runtime server not reachable at ${url}`));
+      }, 5000);
+
+      socket.onopen = () => {
+        clearTimeout(timeout);
+        attachRuntimeSocketHandlers(socket);
+        resolve(socket);
+      };
+
+      socket.onerror = () => {
+        clearTimeout(timeout);
+        if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
+          socket.close();
+        }
+        reject(new Error(`Runtime server not reachable at ${url}`));
+      };
+    } catch (err) {
+      reject(err);
+    }
+  });
 
   const connectRuntimeSocket = () => {
     if (runtimeSocketRef.current && runtimeSocketRef.current.readyState === WebSocket.OPEN) {
@@ -1423,110 +1611,24 @@ export default function CodeEditorPage() {
       return runtimeConnectPromiseRef.current;
     }
 
-    runtimeConnectPromiseRef.current = new Promise((resolve, reject) => {
-      try {
-        const socket = new WebSocket(getRuntimeWsUrl());
-        const timeout = setTimeout(() => {
-          if (socket.readyState === WebSocket.CONNECTING) {
-            socket.close();
-          }
-          runtimeConnectPromiseRef.current = null;
-          reject(new Error('Runtime server not reachable'));
-        }, 5000);
+    runtimeConnectPromiseRef.current = (async () => {
+      const candidates = getRuntimeWsCandidates();
+      let lastError = null;
 
-        socket.onopen = () => {
-          clearTimeout(timeout);
+      for (const candidate of candidates) {
+        try {
+          const socket = await connectRuntimeSocketOnce(candidate);
           runtimeSocketRef.current = socket;
-          runtimeConnectPromiseRef.current = null;
-          resolve(socket);
-        };
-
-        socket.onerror = () => {
-          clearTimeout(timeout);
-          runtimeConnectPromiseRef.current = null;
-          reject(new Error('Runtime server not reachable'));
-        };
-
-        socket.onclose = () => {
-          runtimeSocketRef.current = null;
-        };
-
-          socket.onmessage = (event) => {
-            let msg;
-            try {
-              msg = JSON.parse(event.data);
-            } catch {
-              return;
-            }
-
-            if (msg.type === 'preview') {
-              const pending = previewRequestRef.current;
-              if (pending && msg.requestId === pending.requestId) {
-                clearTimeout(pending.timeout);
-                previewRequestRef.current = null;
-                const baseUrl = getRuntimeHttpUrl();
-                const previewUrl = msg.url?.startsWith('http')
-                  ? msg.url
-                  : `${baseUrl}${msg.url || ''}`;
-                setHtmlPreviewUrl(previewUrl);
-                setTerminalOutput(prev => [...prev, {
-                  type: 'link',
-                  content: previewUrl,
-                  timestamp: new Date()
-                }]);
-                pending.resolve(previewUrl);
-              }
-              return;
-            }
-
-            if (msg.type === 'preview-error') {
-              const pending = previewRequestRef.current;
-              if (pending && msg.requestId === pending.requestId) {
-                clearTimeout(pending.timeout);
-                previewRequestRef.current = null;
-                pending.reject(new Error(msg.data || 'Failed to create preview'));
-              }
-              return;
-            }
-
-            if (msg.type === 'stdout') {
-              setTerminalOutput(prev => [...prev, {
-                type: 'output',
-                content: msg.data,
-                timestamp: new Date()
-            }]);
-          } else if (msg.type === 'stderr' || msg.type === 'error') {
-              setTerminalOutput(prev => [...prev, {
-                type: 'error',
-                content: msg.data,
-                timestamp: new Date()
-              }]);
-              if (msg.type === 'error') {
-                clearRunTimeout();
-              setIsRunning(false);
-              setIsInteractiveRun(false);
-              if (pendingFallbackRun) {
-                const { payload, runLabel } = pendingFallbackRun;
-                setPendingFallbackRun(null);
-                executeRun(payload, runLabel);
-              }
-            }
-          } else if (msg.type === 'exit') {
-            clearRunTimeout();
-            setIsRunning(false);
-            setIsInteractiveRun(false);
-            setPendingFallbackRun(null);
-            setTerminalOutput(prev => [...prev, {
-              type: 'system',
-              content: '$ Process completed.',
-              timestamp: new Date()
-            }]);
-          }
-        };
-      } catch (err) {
-        runtimeConnectPromiseRef.current = null;
-        reject(err);
+          return socket;
+        } catch (err) {
+          lastError = err;
+        }
       }
+
+      throw lastError || new Error('Runtime server not reachable');
+    })()
+      .finally(() => {
+        runtimeConnectPromiseRef.current = null;
       });
 
     return runtimeConnectPromiseRef.current;
@@ -1740,6 +1842,11 @@ export default function CodeEditorPage() {
 
   // Run code using Piston API
   const handleRunCode = async () => {
+    if (!canEdit) {
+      showToast('You are in guest mode. Run and edit are disabled.', 'error', 2500);
+      return;
+    }
+
     const currentActiveFile = activeFileRef.current || activeFile;
     if (!currentActiveFile) {
       showToast('Please open a file to run', 'error', 2500);
@@ -2231,6 +2338,13 @@ export default function CodeEditorPage() {
   const onlineCount = (uniqueConnectedUsers.length || users.filter(u => u.online).length);
   const dirtyCount = openTabs.filter(t => t.isDirty).length;
   const showActionButtons = dirtyCount === 0;
+  const handleExitEditor = () => {
+    if (dirtyCount > 0) {
+      const shouldExit = window.confirm(`You have ${dirtyCount} unsaved file(s). Exit anyway?`);
+      if (!shouldExit) return;
+    }
+    window.location.href = '/create-room';
+  };
 
   const getMaxTerminalHeight = () => {
     if (typeof window === 'undefined') return 360;
@@ -2460,14 +2574,22 @@ export default function CodeEditorPage() {
             <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full pulse-animation"></div>
             <span>{onlineCount} online</span>
           </div>
+          {!canEdit && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-500/15 text-amber-300 text-xs font-medium rounded-full border border-amber-500/30">
+              <Shield className="w-3.5 h-3.5" />
+              <span>Guest mode: edit/run disabled</span>
+            </div>
+          )}
 
-          <button
-            onClick={() => window.location.reload()}
-            className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button flex-shrink-0"
-            title="Refresh"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
+          {isExecutablePlatform && (
+            <button
+              onClick={() => window.location.reload()}
+              className="p-2 hover:bg-slate-700/50 rounded-lg transition-all modern-button flex-shrink-0"
+              title="Refresh"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          )}
 
 
           {/* Action buttons - shown after successful save */}
@@ -2570,6 +2692,14 @@ export default function CodeEditorPage() {
             title="Settings"
           >
             <Settings className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={handleExitEditor}
+            className="p-2 hover:bg-red-500/20 text-red-400 rounded-lg transition-all modern-button flex-shrink-0"
+            title="Exit to Create Room"
+          >
+            <LogOut className="w-4 h-4" />
           </button>
         </div>
       </header>
@@ -2740,6 +2870,11 @@ export default function CodeEditorPage() {
               {currentUserName && (
                 <span className="px-2 py-0.5 rounded font-medium flex-shrink-0" style={{ backgroundColor: `${currentUserColor}20`, color: currentUserColor, border: `1px solid ${currentUserColor}40` }}>
                   {currentUserName}
+                </span>
+              )}
+              {!canEdit && (
+                <span className="sm:hidden px-2 py-0.5 bg-amber-500/15 text-amber-300 rounded border border-amber-500/30 font-medium">
+                  Guest mode
                 </span>
               )}
             </div>
@@ -3214,13 +3349,13 @@ export default function CodeEditorPage() {
                       <div>
                         <label className="text-xs text-slate-400 block mb-1">Download Path</label>
                         {isEditingDownloadPath ? (
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 min-w-0">
                             <input
                               type="text"
                               value={downloadPath}
                               onChange={(e) => setDownloadPath(e.target.value)}
                               placeholder="/path/to/download/folder"
-                              className="flex-1 bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-1.5 text-sm"
+                              className="flex-1 min-w-0 bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-1.5 text-sm"
                             />
                             <button
                               onClick={async () => {
@@ -3237,8 +3372,8 @@ export default function CodeEditorPage() {
                             </button>
                           </div>
                         ) : (
-                          <div className="flex gap-2">
-                            <p className="flex-1 text-sm font-medium bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-1.5">
+                          <div className="flex gap-2 min-w-0">
+                            <p className="flex-1 min-w-0 text-sm font-medium bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-1.5 break-all whitespace-normal">
                               {downloadPath || 'Not set'}
                             </p>
                             {window.flutter_inappwebview?.callHandler && (
