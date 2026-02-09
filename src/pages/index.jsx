@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { motion, useInView, AnimatePresence } from 'framer-motion';
 import {
   Terminal, Users, UserPlus, Code, GitBranch, Smartphone,
@@ -12,12 +12,27 @@ import Navbar from '../Components/navbar';
 import Footer from '../Components/footer';
 import { showToast } from '../Components/toast-notification.jsx';
 import { runAutoRoomMaintenance } from '../function/rooms/room-functions.js';
+import supabase from '../supabaseClient.js';
+import { createRoom } from '../function/rooms/room-main.js';
+// createRoom
+
+const formatCompactNumber = (value = 0) =>
+  new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(Math.max(0, Number(value) || 0));
 
 const LandingPage = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isCompact, setIsCompact] = useState(false);
   const [lastScrollY, setLastScrollY] = useState(0);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isDataLoading, setIsDataLoading] = useState(true);
+  const [dashboardStats, setDashboardStats] = useState({
+    rooms: 0,
+    files: 0,
+    users: 0,
+  });
 
   // Contact form state
   const [formData, setFormData] = useState({
@@ -92,6 +107,46 @@ const LandingPage = () => {
    
 
    
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadDashboardData = async () => {
+      try {
+        setIsDataLoading(true);
+
+        const [roomsCountRes, filesCountRes, usersCountRes] = await Promise.all([
+          supabase.from('rooms').select('id', { count: 'exact', head: true }),
+          supabase.from('files').select('id', { count: 'exact', head: true }),
+          supabase.from('profiles').select('id', { count: 'exact', head: true }),
+        ]);
+
+        if (!isMounted) return;
+
+        const totalRooms = roomsCountRes.error ? 0 : (roomsCountRes.count || 0);
+        const totalFiles = filesCountRes.error ? 0 : (filesCountRes.count || 0);
+        const totalUsers = usersCountRes.error ? 0 : (usersCountRes.count || 0);
+
+        setDashboardStats({
+          rooms: totalRooms,
+          files: totalFiles,
+          users: totalUsers,
+        });
+      } catch (err) {
+        console.error('Failed to load landing dashboard data:', err);
+      } finally {
+        if (isMounted) {
+          setIsDataLoading(false);
+        }
+      }
+    };
+
+    loadDashboardData();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Scroll handler for navbar
@@ -282,7 +337,7 @@ const LandingPage = () => {
   };
 
   // Stats Counter Component
-  const StatsCounter = ({ end, duration = 2000, label }) => {
+  const StatsCounter = ({ end, duration = 2000, label, suffix = '' }) => {
     const [count, setCount] = useState(0);
     const ref = useRef(null);
     const isInView = useInView(ref, { once: true });
@@ -312,7 +367,7 @@ const LandingPage = () => {
     return (
       <div ref={ref} className="text-center">
         <div className="text-3xl sm:text-4xl lg:text-5xl font-bold bg-gradient-to-r from-emerald-400 via-cyan-400 to-blue-400 bg-clip-text text-transparent mb-2">
-          {count.toLocaleString()}+
+          {count.toLocaleString()}{suffix}
         </div>
         <div className="text-gray-400 text-xs sm:text-sm uppercase tracking-wider">{label}</div>
       </div>
@@ -407,6 +462,7 @@ const LandingPage = () => {
     window.location.href = '/create-room';
   }
 
+ 
   // Quick actions
   const quickActions = [
     {
@@ -427,7 +483,7 @@ const LandingPage = () => {
       icon: <Terminal className="w-8 h-8 sm:w-10 h-10 text-white" />,
       title: 'Solo Code',
       description: 'Code by yourself',
-      action: () => handlePage(),
+      action: () => createRoom("Solo Room" , null , true).then(roomId => { window.location.href = `/editor?roomId=${roomId.roomId}&token=${roomId.token}` }),
       gradient: 'from-emerald-500 to-teal-500'
     }
   ];
@@ -579,7 +635,7 @@ const LandingPage = () => {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => handlePage()}
+                onClick={() => createRoom("Solo Room" , null , true).then(roomId => { window.location.href = `/editor?roomId=${roomId.roomId}&token=${roomId.token}` })}
                 className="px-6 sm:px-8 py-3 sm:py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 transition-all"
               >
                 <Terminal className="w-5 h-5 sm:w-6 h-6" />
@@ -595,15 +651,21 @@ const LandingPage = () => {
               className="mt-8 sm:mt-12 grid grid-cols-3 gap-4 sm:gap-6"
             >
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-bold text-blue-400">12K+</div>
+                <div className="text-2xl sm:text-3xl font-bold text-blue-400">
+                  {isDataLoading ? '...' : formatCompactNumber(dashboardStats.rooms)}
+                </div>
                 <div className="text-xs sm:text-sm text-gray-500">Rooms</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-bold text-cyan-400">58K+</div>
+                <div className="text-2xl sm:text-3xl font-bold text-cyan-400">
+                  {isDataLoading ? '...' : formatCompactNumber(dashboardStats.files)}
+                </div>
                 <div className="text-xs sm:text-sm text-gray-500">Files</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-bold text-emerald-400">3K+</div>
+                <div className="text-2xl sm:text-3xl font-bold text-emerald-400">
+                  {isDataLoading ? '...' : formatCompactNumber(dashboardStats.users)}
+                </div>
                 <div className="text-xs sm:text-sm text-gray-500">Users</div>
               </div>
             </motion.div>
@@ -911,7 +973,7 @@ const LandingPage = () => {
               whileHover={{ y: -5 }}
               className="backdrop-blur-xl bg-gradient-to-br from-blue-900/30 to-cyan-900/30 border border-blue-500/20 rounded-2xl p-6 sm:p-8 hover:border-blue-500/40 transition-all"
             >
-              <StatsCounter end={12340} label="Rooms Created" />
+              <StatsCounter end={dashboardStats.rooms} label="Rooms Created" />
             </motion.div>
 
             <motion.div
@@ -922,7 +984,7 @@ const LandingPage = () => {
               whileHover={{ y: -5 }}
               className="backdrop-blur-xl bg-gradient-to-br from-cyan-900/30 to-emerald-900/30 border border-cyan-500/20 rounded-2xl p-6 sm:p-8 hover:border-cyan-500/40 transition-all"
             >
-              <StatsCounter end={58912} label="Files Created" />
+              <StatsCounter end={dashboardStats.files} label="Files Created" />
             </motion.div>
 
             <motion.div
@@ -933,7 +995,7 @@ const LandingPage = () => {
               whileHover={{ y: -5 }}
               className="backdrop-blur-xl bg-gradient-to-br from-emerald-900/30 to-teal-900/30 border border-emerald-500/20 rounded-2xl p-6 sm:p-8 hover:border-emerald-500/40 transition-all sm:col-span-3 lg:col-span-1"
             >
-              <StatsCounter end={3247} label="Active Users" />
+              <StatsCounter end={dashboardStats.users} label="Active Users" />
             </motion.div>
           </div>
         </div>
@@ -1049,17 +1111,19 @@ const LandingPage = () => {
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
             className="text-center"
+            
           >
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
+              onClick={() => window.location.href = "/download"}
               className="px-8 sm:px-10 py-4 sm:py-5 bg-gradient-to-r from-purple-500 via-pink-500 to-rose-500 hover:from-purple-600 hover:via-pink-600 hover:to-rose-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-3 shadow-lg shadow-purple-500/50 transition-all mx-auto"
             >
               <Download className="w-5 h-5 sm:w-6 h-6" />
-              <span>Download Now</span>
+              <span >Download Now</span>
             </motion.button>
             <p className="text-gray-500 text-xs sm:text-sm mt-4">
-              Free to download • No credit card required
+              Free to download.  No credit card required
             </p>
           </motion.div>
         </div>
@@ -1290,3 +1354,4 @@ const LandingPage = () => {
 };
 
 export default LandingPage;
+

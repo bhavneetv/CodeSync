@@ -29,16 +29,19 @@ const Footer = () => {
                     {/* Center - Navigation Links */}
                     <div className="flex flex-col items-center space-y-3">
                         <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm">
-                            <a href="#home" className="text-gray-400 hover:text-white transition-colors">
+                            <a href="/" className="text-gray-400 hover:text-white transition-colors">
                                 Home
                             </a>
-                            <a href="#features" className="text-gray-400 hover:text-white transition-colors">
+                            <a href="/" className="text-gray-400 hover:text-white transition-colors">
                                 Features
                             </a>
-                            <a href="#how-it-works" className="text-gray-400 hover:text-white transition-colors">
+                            <a href="/download" className="text-gray-400 hover:text-white transition-colors">
+                                Download
+                            </a>
+                            <a href="/about" className="text-gray-400 hover:text-white transition-colors">
                                 About
                             </a>
-                            <a href="#contact" className="text-gray-400 hover:text-white transition-colors">
+                            <a href="/" className="text-gray-400 hover:text-white transition-colors">
                                 Contact
                             </a>
                         </div>
@@ -73,7 +76,7 @@ const Footer = () => {
                             <motion.a
                                 whileHover={{ y: -3 }}
                                 whileTap={{ scale: 0.95 }}
-                                href="https://linkedin.com"
+                                href="https://linkedin.com/in/bhavneet-verma"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="w-9 h-9 backdrop-blur-xl bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg flex items-center justify-center transition-all group"

@@ -136,19 +136,19 @@ export default function Navbar(props) {
                                     transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
                                     className="hidden md:flex items-center space-x-5"
                                 >
-                                    <a href="#home" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+                                    <a href="/" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
                                         <Home className="w-3.5 h-3.5" />
                                         <span>Home</span>
                                     </a>
-                                    <a href="#features" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+                                    <a href="/" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
                                         <Zap className="w-3.5 h-3.5" />
                                         <span>Features</span>
                                     </a>
-                                    <a href="#how-it-works" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+                                    <a href="/about" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
                                         <Info className="w-3.5 h-3.5" />
                                         <span>About</span>
                                     </a>
-                                    <a href="#contact" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+                                    <a href="/" className="flex items-center space-x-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
                                         <Mail className="w-3.5 h-3.5" />
                                         <span>Contact</span>
                                     </a>

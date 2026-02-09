@@ -14,6 +14,8 @@ const RoomCreate = () => {
   // Views: 'main', 'join', 'create_details', 'github_select'
   const [view, setView] = useState('main');
   const [loading, setLoading] = useState(false);
+  const [joinLoading, setJoinLoading] = useState(false);
+  const [joiningRoomCode, setJoiningRoomCode] = useState('');
 
   // Room Data
   const [roomName, setRoomName] = useState('');
@@ -298,6 +300,8 @@ const RoomCreate = () => {
 
   // Handle Recent Room Join
   const handleRecentRoomJoin = async (roomCode, roomLink, roomId, hasPassword) => {
+    if (joinLoading) return;
+
     if (hasPassword) {
       setPasswordModal({
         show: true,
@@ -307,46 +311,63 @@ const RoomCreate = () => {
           getCurrentRooms().find(r => r.roomCode === roomCode)?.roomName || "",
         password: ""
       });
-    } 
-    else {
+      return;
+    }
+
+    setJoinLoading(true);
+    setJoiningRoomCode(roomCode);
+
+    try {
       const res = await handleRoomJoin(roomCode, null, false);
 
       if (res?.status === "joined") {
         window.location.href = "/editor?roomId=" + roomLink + "&token=" + res.token;
-      } else if (res?.status === "kicked") {
+        return;
+      }
+
+      if (res?.status === "kicked") {
         showToast("You have been removed from this room.", "error", 1500);
       } else {
         showToast("Failed to join room. Please try again.", "error", 1200);
-
       }
+    } catch (error) {
+      showToast("Failed to join room. Please try again.", "error", 1200);
+    } finally {
+      setJoinLoading(false);
+      setJoiningRoomCode('');
     }
   };
 
 
   // Submit Password for Recent Room
   const handlePasswordModalSubmit = async () => {
-    setLoading(true);
-    const res = await handleRoomJoin(
-      passwordModal.roomCode,
-      passwordModal.password,
-      true
-    );
+    if (joinLoading) return;
+    setJoinLoading(true);
 
-    if (res.status === "wrong_password") {
-      showToast("Incorrect password.", "error", 1200);
-      setLoading(false);
-    } else if (res.status === "not_found") {
-      showToast("Room not found or inactive.", "error", 1200);
-      setLoading(false);
-    } else if (res.status === "kicked") {
-      showToast("You have been removed from this room.", "error", 1500);
-      setLoading(false);
-    } else if (res.status === "joined") {
-      setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' });
-      window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
-    } else {
+    try {
+      const res = await handleRoomJoin(
+        passwordModal.roomCode,
+        passwordModal.password,
+        true
+      );
+
+      if (res.status === "wrong_password") {
+        showToast("Incorrect password.", "error", 1200);
+      } else if (res.status === "not_found") {
+        showToast("Room not found or inactive.", "error", 1200);
+      } else if (res.status === "kicked") {
+        showToast("You have been removed from this room.", "error", 1500);
+      } else if (res.status === "joined") {
+        setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' });
+        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+        return;
+      } else {
+        showToast("Failed to join room.", "error", 1200);
+      }
+    } catch (error) {
       showToast("Failed to join room.", "error", 1200);
-      setLoading(false);
+    } finally {
+      setJoinLoading(false);
     }
   };
 
@@ -397,34 +418,41 @@ const RoomCreate = () => {
   };
 
   const handleJoinNext = async () => {
-    if (!showPasswordInput) {
-      const res = await handleRoomJoin(roomCode.trim(), null, false);
+    if (joinLoading) return;
+    setJoinLoading(true);
 
-      if (res.status === "need_password") {
-        setShowPasswordInput(true);
-      } else if (res.status === "not_found") {
-        showToast("Room not found or inactive.", "error", 1200);
-      } else if (res.status === "kicked") {
-        showToast("You have been removed from this room.", "error", 1500);
-      } else if (res.status === "joined") {
-        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
-      }
-    } else {
-      setLoading(true);
-      const res = await handleRoomJoin(roomCode, roomPassword, true);
+    try {
+      if (!showPasswordInput) {
+        const res = await handleRoomJoin(roomCode.trim(), null, false);
 
-      if (res.status === "wrong_password") {
-        showToast("Incorrect password.", "error", 1200);
-        setLoading(false);
-      } else if (res.status === "not_found") {
-        showToast("Room not found or inactive.", "error", 1200);
-        setLoading(false);
-      } else if (res.status === "kicked") {
-        showToast("You have been removed from this room.", "error", 1500);
-        setLoading(false);
-      } else if (res.status === "joined") {
-        window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+        if (res.status === "need_password") {
+          setShowPasswordInput(true);
+        } else if (res.status === "not_found") {
+          showToast("Room not found or inactive.", "error", 1200);
+        } else if (res.status === "kicked") {
+          showToast("You have been removed from this room.", "error", 1500);
+        } else if (res.status === "joined") {
+          window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+          return;
+        }
+      } else {
+        const res = await handleRoomJoin(roomCode, roomPassword, true);
+
+        if (res.status === "wrong_password") {
+          showToast("Incorrect password.", "error", 1200);
+        } else if (res.status === "not_found") {
+          showToast("Room not found or inactive.", "error", 1200);
+        } else if (res.status === "kicked") {
+          showToast("You have been removed from this room.", "error", 1500);
+        } else if (res.status === "joined") {
+          window.location.href = `/editor?roomId=${res.roomId}&token=${res.token}`;
+          return;
+        }
       }
+    } catch (error) {
+      showToast("Failed to join room.", "error", 1200);
+    } finally {
+      setJoinLoading(false);
     }
   };
 
@@ -760,10 +788,20 @@ const RoomCreate = () => {
                                   whileHover={{ scale: 1.05 }}
                                   whileTap={{ scale: 0.95 }}
                                   onClick={() => handleRecentRoomJoin(room.roomCode, room.roomLink, room.roomId, room.hasPassword)}
-                                  className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg text-xs sm:text-sm font-medium shadow-md transition-all flex items-center justify-center gap-1.5"
+                                  disabled={joinLoading}
+                                  className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-lg text-xs sm:text-sm font-medium shadow-md transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                  <span>Join</span>
-                                  <ArrowRight className="w-3 h-3 sm:w-4 sm:h-4" />
+                                  {joinLoading && joiningRoomCode === room.roomCode ? (
+                                    <>
+                                      <Loader2 className="w-3 h-3 sm:w-4 sm:h-4 animate-spin" />
+                                      <span>Joining...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span>Join</span>
+                                      <ArrowRight className="w-3 h-3 sm:w-4 sm:h-4" />
+                                    </>
+                                  )}
                                 </motion.button>
                               </motion.div>
                             ))
@@ -959,8 +997,9 @@ const RoomCreate = () => {
                         type="text"
                         value={roomCode}
                         onChange={(e) => setRoomCode(e.target.value)}
+                        disabled={joinLoading}
                         placeholder="Enter room code"
-                        className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600"
+                        className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
                     <AnimatePresence>
@@ -975,12 +1014,19 @@ const RoomCreate = () => {
                             type="password"
                             value={roomPassword}
                             onChange={(e) => setRoomPassword(e.target.value)}
+                            disabled={joinLoading}
                             placeholder="Enter password"
-                            className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600"
+                            className="w-full px-4 py-2.5 sm:py-3 bg-black/30 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm sm:text-base placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </motion.div>
                       )}
                     </AnimatePresence>
+                    {joinLoading && (
+                      <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Joining room...</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -988,7 +1034,7 @@ const RoomCreate = () => {
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={handleBack}
-                      disabled={loading}
+                      disabled={loading || joinLoading}
                       className="py-2.5 sm:py-3 px-4 sm:px-6 bg-white/5 hover:bg-white/10 rounded-xl font-medium border border-white/10 disabled:opacity-50 text-sm sm:text-base transition-all"
                     >
                       Back
@@ -997,10 +1043,10 @@ const RoomCreate = () => {
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={handleJoinNext}
-                      disabled={!roomCode || loading}
+                      disabled={!roomCode || loading || joinLoading}
                       className="py-2.5 sm:py-3 px-4 sm:px-6 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 text-sm sm:text-base transition-all"
                     >
-                      {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>{showPasswordInput ? 'Join' : 'Next'}</span> <ArrowRight className="w-4 h-4" /></>}
+                      {joinLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>{showPasswordInput ? 'Join' : 'Next'}</span> <ArrowRight className="w-4 h-4" /></>}
                     </motion.button>
                   </div>
                 </motion.div>
@@ -1019,7 +1065,7 @@ const RoomCreate = () => {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4"
-            onClick={() => setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' })}
+            onClick={() => !joinLoading && setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' })}
           >
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
@@ -1032,6 +1078,7 @@ const RoomCreate = () => {
                 <h3 className="text-lg sm:text-xl md:text-2xl font-bold text-white">Room Password</h3>
                 <button
                   onClick={() => setPasswordModal({ show: false, roomId: null, roomCode: '', roomLink: '', roomName: '', password: '' })}
+                  disabled={joinLoading}
                   className="text-gray-400 hover:text-white transition"
                 >
                   <X className="w-5 h-5" />
@@ -1046,8 +1093,9 @@ const RoomCreate = () => {
                 type="password"
                 value={passwordModal.password}
                 onChange={(e) => setPasswordModal({ ...passwordModal, password: e.target.value })}
+                disabled={joinLoading}
                 placeholder="Enter room password"
-                className="w-full px-4 py-2.5 sm:py-3 bg-black/40 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all mb-5 text-white text-sm sm:text-base placeholder:text-gray-600"
+                className="w-full px-4 py-2.5 sm:py-3 bg-black/40 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all mb-5 text-white text-sm sm:text-base placeholder:text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && passwordModal.password) {
                     handlePasswordModalSubmit();
@@ -1061,7 +1109,7 @@ const RoomCreate = () => {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => setPasswordModal({ show: false, roomId: null, roomName: '', password: '' })}
-                  disabled={loading}
+                  disabled={loading || joinLoading}
                   className="py-2.5 sm:py-3 px-4 bg-white/5 hover:bg-white/10 rounded-xl font-medium border border-white/10 transition disabled:opacity-50 text-sm sm:text-base"
                 >
                   Cancel
@@ -1070,10 +1118,10 @@ const RoomCreate = () => {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handlePasswordModalSubmit}
-                  disabled={!passwordModal.password || loading}
+                  disabled={!passwordModal.password || loading || joinLoading}
                   className="py-2.5 sm:py-3 px-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 text-sm sm:text-base"
                 >
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>Join</span> <ArrowRight className="w-4 h-4" /></>}
+                  {joinLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>Join</span> <ArrowRight className="w-4 h-4" /></>}
                 </motion.button>
               </div>
             </motion.div>

@@ -6,6 +6,8 @@ import CodeEditorpage from '../pages/editor';
 import MainCodeEditorPage from '../pages/twst';
 import Login from '../login';
 import RoomCleanupPage from '../pages/room-cleanup';
+import DownloadPage from '../download';
+import About from '../about,';
 
 const AppRoutes = () => {
   return (
@@ -17,6 +19,8 @@ const AppRoutes = () => {
       <Route path="/twst" element={<MainCodeEditorPage />} />
       <Route path="/login" element={<Login />} />
       <Route path="/room-cleanup" element={<RoomCleanupPage />} />
+      <Route path="/download" element={<DownloadPage />} />
+      <Route path="/about" element={<About />} />
     </Routes>
   );
 };

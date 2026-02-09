@@ -284,6 +284,12 @@ export default function CodeEditorPage() {
   const hasInitialLocalSyncRef = useRef(false);
   const lastLocalSyncTimeRef = useRef(0);
   const isApplyingRemoteChangeRef = useRef(false);
+  const suppressRemoteEchoRef = useRef(null);
+  const localEditMetaRef = useRef({});
+  const remoteVersionBySourceRef = useRef({});
+  const openTabsRef = useRef([]);
+  const allFileContentsRef = useRef({});
+  const pendingFileContentRequestsRef = useRef({});
   const activeFileRef = useRef(null);
   const pendingSaveTimeoutRef = useRef(null);
   const lastSavedContentRef = useRef({});
@@ -501,6 +507,12 @@ export default function CodeEditorPage() {
       }
       // Clear all broadcast debounce timers
       Object.values(broadcastDebounceRef.current).forEach(timer => clearTimeout(timer));
+      Object.values(pendingFileContentRequestsRef.current).forEach((pending) => {
+        if (pending?.timeout) {
+          clearTimeout(pending.timeout);
+        }
+      });
+      pendingFileContentRequestsRef.current = {};
     };
   }, [roomLink]);
 
@@ -589,6 +601,44 @@ export default function CodeEditorPage() {
     fetchDownloadPath(data.user_id);
   };
 
+  const requestFileContentFromPeers = async (fileId, fallbackContent = '') => {
+    const channel = realtimeChannelRef.current;
+    if (!channel || !currentUserId || !fileId) {
+      return fallbackContent;
+    }
+
+    const requestId = `${fileId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        const pending = pendingFileContentRequestsRef.current[requestId];
+        if (pending) {
+          delete pendingFileContentRequestsRef.current[requestId];
+        }
+        resolve(fallbackContent);
+      }, 1200);
+
+      pendingFileContentRequestsRef.current[requestId] = {
+        timeout,
+        resolve: (content) => {
+          clearTimeout(timeout);
+          delete pendingFileContentRequestsRef.current[requestId];
+          resolve(typeof content === 'string' ? content : fallbackContent);
+        }
+      };
+
+      channel.send({
+        type: 'broadcast',
+        event: 'request-file-content',
+        payload: {
+          fileId,
+          requesterId: currentUserId,
+          requestId
+        }
+      });
+    });
+  };
+
   // Initialize realtime collaboration
   const initializeCollaboration = async (
     userId,
@@ -667,48 +717,79 @@ export default function CodeEditorPage() {
 
     /* -------------------- CONTENT CHANGE -------------------- */
     channel.on('broadcast', { event: 'content-change' }, ({ payload }) => {
-      if (payload.userId === userId) return;
+      if (!payload?.fileId || payload.userId === userId) return;
+
+      const sourceKey = `${payload.userId}:${payload.fileId}`;
+      const incomingVersion = Number.isFinite(payload.version) ? payload.version : null;
+      if (incomingVersion !== null) {
+        const lastSeenVersion = remoteVersionBySourceRef.current[sourceKey] || 0;
+        if (incomingVersion <= lastSeenVersion) {
+          return;
+        }
+        remoteVersionBySourceRef.current[sourceKey] = incomingVersion;
+      }
+
+      const incomingContent = payload.content ?? '';
+      allFileContentsRef.current = {
+        ...allFileContentsRef.current,
+        [payload.fileId]: incomingContent
+      };
 
       setAllFileContents(prev => ({
         ...prev,
-        [payload.fileId]: payload.content
+        [payload.fileId]: incomingContent
       }));
 
       setOpenTabs(prev =>
         prev.map(t =>
           t.id === payload.fileId
-            ? { ...t, content: payload.content, isDirty: false }
+            ? { ...t, content: incomingContent, isDirty: false }
             : t
         )
       );
 
+      const activeCurrent = activeFileRef.current;
+      if (payload.fileId !== activeCurrent?.id || !editorRef.current) {
+        return;
+      }
+
+      const lastLocal = localEditMetaRef.current[payload.fileId];
+      const incomingSentAt = Number.isFinite(payload.sentAt) ? payload.sentAt : null;
+      if (lastLocal?.dirty && incomingSentAt !== null && incomingSentAt < (lastLocal.updatedAt || 0)) {
+        return;
+      }
+
       if (
-        payload.fileId === activeFileRef.current?.id &&
-        editorRef.current &&
         !isApplyingRemoteChangeRef.current
       ) {
         const model = editorRef.current.getModel();
         if (!model) return;
 
         const current = model.getValue();
-        if (current === payload.content) return;
+        if (current === incomingContent) return;
 
         isApplyingRemoteChangeRef.current = true;
+        suppressRemoteEchoRef.current = {
+          fileId: payload.fileId,
+          content: incomingContent,
+        };
 
         const position = editorRef.current.getPosition();
         const scrollTop = editorRef.current.getScrollTop();
 
-        editorRef.current.setValue(payload.content);
+        editorRef.current.setValue(incomingContent);
 
         if (position) editorRef.current.setPosition(position);
         editorRef.current.setScrollTop(scrollTop);
 
-        editorContentRef.current = payload.content;
-        setEditorContent(payload.content);
-
-        setTimeout(() => {
-          isApplyingRemoteChangeRef.current = false;
-        }, 100);
+        editorContentRef.current = incomingContent;
+        setEditorContent(incomingContent);
+        localEditMetaRef.current[payload.fileId] = {
+          ...(localEditMetaRef.current[payload.fileId] || {}),
+          dirty: false,
+          updatedAt: Date.now(),
+        };
+        isApplyingRemoteChangeRef.current = false;
       }
     });
 
@@ -717,19 +798,33 @@ export default function CodeEditorPage() {
       'broadcast',
       { event: 'request-file-content' },
       ({ payload }) => {
-        if (payload.requesterId === userId) return;
+        if (!payload?.fileId || payload.requesterId === userId) return;
 
-        const tab = openTabs.find(t => t.id === payload.fileId);
-        if (!tab) return;
+        let content = allFileContentsRef.current[payload.fileId];
+        if (content === undefined) {
+          const tab = openTabsRef.current.find(t => t.id === payload.fileId);
+          if (tab && tab.content !== undefined) {
+            content = tab.content;
+          }
+        }
+        if (content === undefined && activeFileRef.current?.id === payload.fileId) {
+          content = editorContentRef.current ?? '';
+        }
+        if (content === undefined) return;
+
+        const localMeta = localEditMetaRef.current[payload.fileId] || {};
 
         channel.send({
           type: 'broadcast',
           event: 'file-content-response',
           payload: {
             fileId: payload.fileId,
-            content: tab.content ?? '',
+            content,
             responderId: userId,
-            requesterId: payload.requesterId
+            requesterId: payload.requesterId,
+            requestId: payload.requestId || null,
+            version: localMeta.version || 0,
+            sentAt: localMeta.updatedAt || Date.now(),
           }
         });
       }
@@ -740,7 +835,19 @@ export default function CodeEditorPage() {
       'broadcast',
       { event: 'file-content-response' },
       ({ payload }) => {
-        if (payload.requesterId !== userId) return;
+        if (!payload?.fileId || payload.requesterId !== userId) return;
+
+        if (payload.requestId) {
+          const pending = pendingFileContentRequestsRef.current[payload.requestId];
+          if (pending?.resolve) {
+            pending.resolve(payload.content);
+          }
+        }
+
+        allFileContentsRef.current = {
+          ...allFileContentsRef.current,
+          [payload.fileId]: payload.content
+        };
 
         setAllFileContents(prev => ({
           ...prev,
@@ -855,6 +962,14 @@ export default function CodeEditorPage() {
     }
   }, [activeFile, currentUserId]);
 
+  useEffect(() => {
+    openTabsRef.current = openTabs;
+  }, [openTabs]);
+
+  useEffect(() => {
+    allFileContentsRef.current = allFileContents;
+  }, [allFileContents]);
+
   // Auto-scroll chat to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -956,7 +1071,7 @@ export default function CodeEditorPage() {
         fullPath: fileNode.fullPath,
         repoPath: fileNode.repoPath,
         folderPath: fileNode.folderPath,
-        content: allFileContents[fileNode.id] || '',
+        content: allFileContentsRef.current[fileNode.id] || '',
       };
       setActiveFile(quickTab);
       activeFileRef.current = quickTab;
@@ -1018,56 +1133,31 @@ export default function CodeEditorPage() {
       } catch (err) {
         showToast('Failed to load file content from server', 'error', 2500);
         console.error('Failed to load from server:', err);
-
-        if (realtimeChannelRef.current && currentUserId) {
-          // console.log('Requesting content from other users');
-          realtimeChannelRef.current.send({
-            type: 'broadcast',
-            event: 'request-file-content',
-            payload: {
-              fileId: fileNode.id,
-              requesterId: currentUserId
-            }
-          });
-
-          // Wait a bit for response
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // Check if we got content
-          if (allFileContents[fileNode.id]) {
-            content = allFileContents[fileNode.id];
-            // console.log('Received content from other user');
-          } else {
-            content = ''; // Default to empty
-          }
-        }
+        content = await requestFileContentFromPeers(fileNode.id, '');
       }
 
       // Update cache
+      allFileContentsRef.current = {
+        ...allFileContentsRef.current,
+        [fileNode.id]: content
+      };
       setAllFileContents(prev => ({
         ...prev,
         [fileNode.id]: content
       }));
 
       // Always ask peers for freshest content (unsaved changes won't be in storage)
-      if (realtimeChannelRef.current && currentUserId) {
-        realtimeChannelRef.current.send({
-          type: 'broadcast',
-          event: 'request-file-content',
-          payload: {
-            fileId: fileNode.id,
-            requesterId: currentUserId
-          }
-        });
-
-        await new Promise(resolve => setTimeout(resolve, 500));
-        if (allFileContents[fileNode.id] && allFileContents[fileNode.id] !== content) {
-          content = allFileContents[fileNode.id];
-          setAllFileContents(prev => ({
-            ...prev,
-            [fileNode.id]: content
-          }));
-        }
+      const freshestPeerContent = await requestFileContentFromPeers(fileNode.id, content);
+      if (freshestPeerContent !== content) {
+        content = freshestPeerContent;
+        allFileContentsRef.current = {
+          ...allFileContentsRef.current,
+          [fileNode.id]: content
+        };
+        setAllFileContents(prev => ({
+          ...prev,
+          [fileNode.id]: content
+        }));
       }
 
       if (existingTab) {
@@ -1332,32 +1422,60 @@ export default function CodeEditorPage() {
   }, [remoteCursors, remoteSelections, activeFile]);
 
   const handleEditorChange = (value) => {
-    if (isApplyingRemoteChangeRef.current) {
+    const currentFile = activeFileRef.current || activeFile;
+    if (!currentFile) {
       return;
     }
 
-    editorContentRef.current = value;
-    setEditorContent(value);
+    const nextValue = value ?? '';
+    const suppressed = suppressRemoteEchoRef.current;
+    if (
+      isApplyingRemoteChangeRef.current &&
+      suppressed &&
+      suppressed.fileId === currentFile.id &&
+      suppressed.content === nextValue
+    ) {
+      suppressRemoteEchoRef.current = null;
+      isApplyingRemoteChangeRef.current = false;
+      return;
+    }
+
+    isApplyingRemoteChangeRef.current = false;
+    suppressRemoteEchoRef.current = null;
+
+    editorContentRef.current = nextValue;
+    setEditorContent(nextValue);
+
+    const now = Date.now();
+    const lastLocalMeta = localEditMetaRef.current[currentFile.id] || { version: 0 };
+    const nextVersion = (lastLocalMeta.version || 0) + 1;
+    localEditMetaRef.current[currentFile.id] = {
+      version: nextVersion,
+      updatedAt: now,
+      dirty: true,
+    };
 
     // Update cache
-    if (activeFile) {
-      setAllFileContents(prev => ({
-        ...prev,
-        [activeFile.id]: value
-      }));
-    }
+    allFileContentsRef.current = {
+      ...allFileContentsRef.current,
+      [currentFile.id]: nextValue
+    };
+    setAllFileContents(prev => ({
+      ...prev,
+      [currentFile.id]: nextValue
+    }));
 
     setOpenTabs(prev =>
       prev.map(t =>
-        t.id === activeFile?.id
-          ? { ...t, content: value, isDirty: true }
+        t.id === currentFile.id
+          ? { ...t, content: nextValue, isDirty: true }
           : t
       )
     );
 
     // Broadcast changes with debouncing per file
-    if (realtimeChannelRef.current && currentUserId && activeFile) {
-      const fileId = activeFile.id;
+    if (realtimeChannelRef.current && currentUserId) {
+      const fileId = currentFile.id;
 
       // Clear existing timeout for this file
       if (broadcastDebounceRef.current[fileId]) {
@@ -1373,8 +1491,10 @@ export default function CodeEditorPage() {
           event: 'content-change',
           payload: {
             userId: currentUserId,
-            content: value,
-            fileId: fileId
+            content: nextValue,
+            fileId,
+            version: nextVersion,
+            sentAt: now,
           }
         });
         if (pos) {
@@ -1732,6 +1852,64 @@ export default function CodeEditorPage() {
     }]);
   };
 
+  const normalizeCloudRunPayload = (rawPayload, runLabel) => {
+    const fallbackName = (runLabel || 'main.txt').toString().split(/[\\/]/).pop() || 'main.txt';
+    const rawFiles = Array.isArray(rawPayload?.files) ? rawPayload.files : [];
+
+    const files = rawFiles
+      .map((file, index) => {
+        const nameCandidate = (file?.name ?? '').toString().trim();
+        const safeName = (nameCandidate || `${fallbackName}-${index}`).replace(/^[\\/]+/, '');
+        const content = typeof file?.content === 'string'
+          ? file.content
+          : (file?.content == null ? '' : String(file.content));
+
+        return {
+          name: safeName || `${fallbackName}-${index}`,
+          content,
+        };
+      })
+      .filter((file) => file.name.length > 0);
+
+    return {
+      ...rawPayload,
+      files: files.length > 0 ? files : [{ name: fallbackName, content: '' }],
+      stdin: typeof rawPayload?.stdin === 'string'
+        ? rawPayload.stdin
+        : (rawPayload?.stdin == null ? '' : String(rawPayload.stdin)),
+    };
+  };
+
+  const singleFileCloudPayload = (payload, runLabel) => {
+    const normalized = normalizeCloudRunPayload(payload, runLabel);
+    const primary = normalized.files[0] || { name: (runLabel || 'main.txt'), content: '' };
+    return {
+      ...normalized,
+      files: [primary],
+    };
+  };
+
+  const readRuntimeHttpError = async (response) => {
+    try {
+      const bodyText = await response.text();
+      if (!bodyText) return '';
+      try {
+        const parsed = JSON.parse(bodyText);
+        const detail =
+          parsed?.message ||
+          parsed?.error ||
+          parsed?.stderr ||
+          parsed?.output ||
+          bodyText;
+        return String(detail).replace(/\s+/g, ' ').trim().slice(0, 220);
+      } catch {
+        return bodyText.replace(/\s+/g, ' ').trim().slice(0, 220);
+      }
+    } catch {
+      return '';
+    }
+  };
+
   const executeRun = async (payload, runLabel) => {
     setIsInteractiveRun(false);
     setIsRunning(true);
@@ -1756,25 +1934,40 @@ export default function CodeEditorPage() {
           timestamp: new Date()
         }]);
       }, 30000);
+      const basePayload = normalizeCloudRunPayload(payload, runLabel);
 
-      const response = await fetch('https://emkc.org/api/v2/piston/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      const runWithPayload = async (requestPayload, allow400Retry = true) => {
+        const response = await fetch('https://emkc.org/api/v2/piston/execute', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestPayload),
+          signal: controller.signal,
+        });
 
-      if (!response) {
-        throw new Error('No response from runtime service');
-      }
+        if (!response) {
+          throw new Error('No response from runtime service');
+        }
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+        if (!response.ok) {
+          const detail = await readRuntimeHttpError(response);
+          if (response.status === 400 && allow400Retry && requestPayload.files.length > 1) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'system',
+              content: 'Cloud runner rejected multi-file request (400). Retrying with active file only...',
+              timestamp: new Date()
+            }]);
+            return runWithPayload(singleFileCloudPayload(requestPayload, runLabel), false);
+          }
+          const detailSuffix = detail ? ` - ${detail}` : '';
+          throw new Error(`HTTP error! status: ${response.status}${detailSuffix}`);
+        }
 
-      const result = await response.json();
+        return response.json();
+      };
+
+      const result = await runWithPayload(basePayload, true);
 
       if (result.run) {
         if (result.run.stdout) {

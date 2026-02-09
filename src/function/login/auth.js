@@ -124,15 +124,31 @@ const beginExternalOAuthInApp = async (provider, returnPath = "/create-room", op
   const bridge = await getInAppBridge();
   if (!bridge) return null;
 
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider,
-    options: {
-      ...options,
-      // Route back through web origin, then deep-link to app from the landing page.
-      redirectTo: buildInAppOAuthRedirect(returnPath),
-      skipBrowserRedirect: true,
-    },
-  });
+  // Prefer direct deep-link callback so successful OAuth re-opens the app.
+  // Fallback to web bridge for providers/environments that reject custom schemes.
+  const authAttempts = [
+    buildAppDeepLinkRedirect(returnPath),
+    buildInAppOAuthRedirect(returnPath),
+  ];
+
+  let data = null;
+  let error = null;
+  for (const redirectTo of authAttempts) {
+    const result = await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        ...options,
+        redirectTo,
+        skipBrowserRedirect: true,
+      },
+    });
+
+    data = result.data ?? null;
+    error = result.error ?? null;
+    if (!error && data?.url) {
+      break;
+    }
+  }
 
   if (error) throw error;
   const authUrl = data?.url;
