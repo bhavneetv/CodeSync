@@ -1,175 +1,235 @@
-# 🚀 CodeSync — Real-Time Collaborative Code Editor
+﻿# Code Sync
 
-CodeSync is a **modern, real-time collaborative code editor** that lets users **create or join coding rooms instantly — no login required**.  
-Users can start coding immediately, collaborate live, and later log in to unlock advanced features like **GitHub integration, permanent storage, and team management**.
+Code Sync is a real-time collaborative coding platform with:
+- A web app (React + Vite)
+- A runtime server for interactive execution and HTML preview
+- A Flutter wrapper app for Android, iOS, and Windows
 
----
+It supports instant room-based collaboration, live code sync, file management, code execution, and GitHub integration.
 
-## ✨ Features
+## Features
 
-### 🧑‍💻 Instant Coding (No Login Required)
-- Create or join a temporary room instantly
-- Rooms are valid for **24 hours**
-- Run and save code during the session
-- No signup friction
+### Room and access model
+- Create and join rooms by link/code
+- Room types:
+  - `temporary` for anonymous sessions
+  - `permanent` for logged-in users
+  - `solo` for personal coding sessions
+- Password-protected rooms
+- Join tokens for room access validation
+- Owner/editor/guest behavior
+- Kicked-user protection
 
-### 🔐 Login to Unlock More
-- Permanent rooms
-- GitHub push & pull
-- Invite collaborators
-- Room ownership & permissions
-- Cross-device access
+### Authentication
+- Supabase auth integration
+- Email/password login
+- OAuth with Google and GitHub
+- In-app OAuth support for Flutter WebView (deep-link return to app)
 
-### 🤝 Real-Time Collaboration
-- Live multi-user editing
-- Online users indicator
-- Role-based actions (Owner / Editor / Viewer)
-- Member management (kick, transfer ownership)
+### Real-time collaboration
+- Presence tracking (who is online)
+- Live cursor and selection sharing
+- Live content sync for shared files
+- Multi-user chat in editor panel
+- Conflict-safe content propagation improvements for fast multi-user typing
+- Request/response file-content sync for late joiners and refresh recovery
 
-### 📁 File Management
-- Create, rename, delete files
-- Folder & file tree explorer
-- Support for multiple languages:
-  - Python, C, C++, Java, JavaScript
-  - Custom extensions
+### Editor and files
+- Monaco Editor based code editing
+- Open tabs, dirty state, and file tree explorer
+- Create/rename/delete files and folders
+- Encrypted file content at rest in Supabase Storage
+- File sync in real-time across participants
 
-### ▶️ Code Execution
-- Run code directly from the editor
-- Integrated terminal panel
-- VS Code–like line & column indicator
+### Run and preview
+- Cloud execution fallback via Piston API (`emkc.org`)
+- Local runtime execution via WebSocket runtime server (interactive stdin support)
+- HTML project preview endpoint from runtime server
+- Auto fallback between local runtime and cloud run modes in editor
 
-### 🧩 GitHub Integration
-- Import repositories
-- Push code to GitHub
-- OAuth via GitHub (login required)
+### GitHub integration
+- GitHub OAuth connection
+- Import repository files into a room
+- Push room changes back to GitHub
 
-### 🎨 Modern UI / UX
-- Dark blue glassmorphism theme
-- Smooth animations (Framer Motion)
-- Fully responsive (desktop + mobile)
-- Drawer-based UI for mobile devices
+### Device save/export
+- Web: download full project as ZIP
+- Flutter app: pick local folder and sync files to device
+- iOS app-documents fallback for local save path
 
----
+### Maintenance
+- Stale room cleanup support (temporary and inactive room handling)
+- Room/file/member cleanup flow for deactivated rooms
 
-## 🧠 How It Works
+## Tech stack
 
-1. Open CodeSync
-2. Create or join a room (guest allowed)
-3. Start coding instantly
-4. Login anytime to save permanently & unlock features
+- Frontend: React 19, Vite, Framer Motion, Monaco Editor, Tailwind-style utility classes
+- Backend services: Supabase (Auth, Postgres, Realtime, Storage)
+- Runtime: Node.js + `ws` WebSocket server
+- App wrapper: Flutter + InAppWebView + App Links
 
----
-
-## 🖥️ Tech Stack
-
-### Frontend
-- **React (Vite)**
-- **Tailwind CSS**
-- **Framer Motion**
-- **Monaco Editor**
-- **Lucide Icons**
-
-### Backend *(Planned / In Progress)*
-- WebSockets (real-time sync)
-- Authentication (Email, Google, GitHub)
-- File & room management APIs
-
----
-
-## 📂 Project Structure
+## Repository layout
 
 ```txt
-src/
-├── components/
-├── pages/
-├── layouts/
-├── context/
-├── hooks/
-├── services/
-├── utils/
-├── styles/
-├── App.jsx
-└── main.jsx
+.
+|- src/                      # Web app
+|  |- pages/                 # Landing, room-create, editor, upload, etc.
+|  |- function/              # Auth, rooms, files, editor helpers
+|  |- Components/            # Shared UI components
+|  `- utils/route.jsx        # Client routes
+|- runtime-server/
+|  |- server/index.js        # Local runtime + preview websocket/http server
+|  `- Dockerfile             # Runtime container build
+|- codesync/                 # Flutter wrapper app
+|  |- lib/main.dart
+|  `- .github/workflows/     # Mobile/desktop release workflows
+`- README.md
 ```
 
-### 📊 Room Comparison
+## Database objects used
 
-| Feature | Temporary Room | Permanent Room | Solo Room |
-|------|----------------|----------------|-----------|
-| Login Required | ❌ No | ✅ Yes | ❌ Optional |
-| Expiry | 24 Hours | Unlimited | Session-based |
-| Real-time Collaboration | ✅ Yes | ✅ Yes | ❌ No |
-| Save Code | ✅ Temporary | ✅ Permanent | ✅ Local |
-| Run Code | ✅ Yes | ✅ Yes | ✅ Yes |
-| GitHub Integration | ❌ No | ✅ Yes | ❌ No |
-| Invite Users | ❌ No | ✅ Yes | ❌ No |
-| Ownership & Roles | ❌ No | ✅ Yes | ❌ No |
+Main tables queried by app logic:
+- `rooms`
+- `room_members`
+- `files`
+- `profiles`
+- `folders` (best-effort cleanup path)
 
----
-## 📱 Responsive Design
+Main storage bucket:
+- `user-files`
 
-CodeSync is built with a **mobile-first approach** to ensure a smooth experience across all devices.
+## Environment variables
 
-- **Desktop**
-  - Full multi-panel editor layout
-  - Persistent file explorer
-  - Inline terminal and users panel
+Create a root `.env` file for the web app:
 
-- **Tablet**
-  - Adaptive panel widths
-  - Collapsible sidebars
-  - Touch-friendly controls
+```env
+VITE_Supabase_URL="https://<project>.supabase.co"
+VITE_Supabase_Anon_Key="<anon-key>"
+VITE_RUNTIME_WS_URL="wss://<your-runtime-host>"
 
-- **Mobile**
-  - Drawer-based file explorer
-  - Bottom-sheet terminal
-  - Icon-only action buttons
-  - Optimized editor focus
+# Optional overrides
+VITE_AUTH_REDIRECT_ORIGIN="https://codesyncio.in"
+VITE_APP_DEEP_LINK="codesync://auth-callback"
+```
 
----
+## Local development process
 
-## 🛠 Local Development
-
-Follow these steps to run CodeSync locally:
+### 1) Install dependencies
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/codesync.git
-
-# Navigate to the project directory
-cd codesync
-
-# Install dependencies
 npm install
-
-# Start the development server
-npm run dev
-
 ```
-### ⚙ Environment Variables
 
-Create a .env file in the root directory:
+### 2) Start runtime server (recommended for interactive run/preview)
+
+In terminal A:
+
 ```bash
-VITE_APP_NAME=CodeSync
-VITE_API_BASE_URL=http://localhost:4000
+npm run server
 ```
----
-### 🔐 Authentication (by Supabase)
 
-Email & password login
-OAuth:
-- Google
-- GitHub
-Session-based authentication
-JWT for secure API access 
----
-### 🤝 Contributing
-We welcome contributions!
-- Fork the repository
-- Create a feature branch
-- Commit your changes
-- Open a Pull Request
-Please follow clean code practices and consistent styling.
----
-### 📜 License
-This project is licensed under the MIT License.
+This starts `runtime-server/server/index.js` on port `3001` by default.
+
+### 3) Start web app
+
+In terminal B:
+
+```bash
+npm run dev
+```
+
+### 4) Open app
+
+Use the local URL printed by Vite.
+
+## Runtime server process
+
+### Run directly
+
+```bash
+cd runtime-server
+npm install
+npm start
+```
+
+### Run with Docker
+
+```bash
+cd runtime-server
+docker build -t code-sync-runtime .
+docker run --rm -p 3001:3001 code-sync-runtime
+```
+
+Runtime server supports:
+- Python
+- Node.js
+- Java
+- C
+- C++
+- Prolog
+- Ruby
+
+And provides:
+- WebSocket command execution
+- `/preview/<id>/...` static preview route for HTML projects
+
+## Web build process
+
+```bash
+npm run build
+npm run preview
+```
+
+Deploy the generated `dist/` as a static site.
+
+## Flutter app process (Android/iOS/Windows wrapper)
+
+From `codesync/`:
+
+```bash
+flutter pub get
+flutter run --dart-define=APP_URL=https://codesyncio.in/
+```
+
+Release builds:
+
+```bash
+flutter build apk --release --dart-define=APP_URL=https://codesyncio.in/
+flutter build ios --release --no-codesign --dart-define=APP_URL=https://codesyncio.in/
+flutter build windows --release --dart-define=APP_URL=https://codesyncio.in/
+```
+
+## Release workflows process
+
+Workflow files in `codesync/.github/workflows/`:
+- `android-relese.yml` builds Android APK and publishes release asset
+- `window.yml` builds Windows app and uploads zipped artifact
+- `dart.yml` currently contains an iOS IPA release flow
+
+Current Android/Windows workflows are tag-triggered for `v1.1` plus manual dispatch. Update tag patterns before broader release versioning.
+
+## OAuth redirect setup process (Supabase)
+
+Configure Supabase Auth `Site URL` and redirect URLs to include your domains and deep link.
+
+Typical allowed redirects:
+- `https://codesyncio.in/`
+- `https://www.codesyncio.in/`
+- `https://codesyncioo.netlify.app/`
+- `https://www.codesyncioo.netlify.app/`
+- `codesync://auth-callback`
+
+## User flow process
+
+1. Open landing page
+2. Create room / join room / solo room
+3. Collaborate in editor (live users, cursors, file updates)
+4. Run code (local runtime or cloud fallback)
+5. Save/export/share, optionally sync GitHub
+
+## Notes and troubleshooting
+
+- If local runtime is unreachable, editor falls back to cloud run mode for supported languages.
+- If cloud run returns HTTP 400 for multi-file payloads, editor retries with active file.
+- For app OAuth return issues, verify deep-link registration and Supabase redirect list.
+- For refresh/open stale file issues, peer file-content request/response now resolves content by request ID.
