@@ -1,235 +1,256 @@
-﻿# Code Sync
+# Code Sync
 
-Code Sync is a real-time collaborative coding platform with:
-- A web app (React + Vite)
-- A runtime server for interactive execution and HTML preview
-- A Flutter wrapper app for Android, iOS, and Windows
+Code Sync is a **real-time collaborative coding platform** that allows multiple users to write, run, and manage code together in shared rooms.
 
-It supports instant room-based collaboration, live code sync, file management, code execution, and GitHub integration.
+It includes:
+- 🌐 **Web App** (React + Vite)
+- ⚙️ **Runtime Server** for interactive code execution & HTML preview
+- 📱 **Flutter App** for Android, iOS, and Windows
+
+Live collaboration, file sync, execution, and GitHub integration — all in one place.
+
+🔗 **Live Website:** https://codesyncioo.netlify.app/
+
+---
 
 ## Features
 
 ### Room and access model
-- Create and join rooms by link/code
+- Create & join rooms via link or code
 - Room types:
-  - `temporary` for anonymous sessions
-  - `permanent` for logged-in users
-  - `solo` for personal coding sessions
+  - `temporary` – anonymous sessions
+  - `permanent` – authenticated users
+  - `solo` – personal coding rooms
 - Password-protected rooms
-- Join tokens for room access validation
-- Owner/editor/guest behavior
-- Kicked-user protection
+- Join tokens for access validation
+- Owner / editor / guest roles
+- Kick & rejoin protection
 
 ### Authentication
-- Supabase auth integration
-- Email/password login
-- OAuth with Google and GitHub
-- In-app OAuth support for Flutter WebView (deep-link return to app)
+- Supabase authentication
+- Email & password login
+- OAuth (Google, GitHub)
+- Flutter WebView OAuth with deep-link return to app
 
 ### Real-time collaboration
-- Presence tracking (who is online)
-- Live cursor and selection sharing
-- Live content sync for shared files
-- Multi-user chat in editor panel
-- Conflict-safe content propagation improvements for fast multi-user typing
-- Request/response file-content sync for late joiners and refresh recovery
+- Live user presence
+- Cursor & selection sharing
+- Real-time file sync
+- Editor chat panel
+- Conflict-safe fast typing sync
+- Late-joiner file recovery using request/response sync
 
-### Editor and files
-- Monaco Editor based code editing
-- Open tabs, dirty state, and file tree explorer
-- Create/rename/delete files and folders
-- Encrypted file content at rest in Supabase Storage
-- File sync in real-time across participants
+### Editor and file system
+- Monaco Editor
+- File tree with folders
+- Create / rename / delete files
+- Dirty tab tracking
+- Encrypted file storage in Supabase
+- Real-time file updates across users
 
 ### Run and preview
-- Cloud execution fallback via Piston API (`emkc.org`)
-- Local runtime execution via WebSocket runtime server (interactive stdin support)
-- HTML project preview endpoint from runtime server
-- Auto fallback between local runtime and cloud run modes in editor
+- Cloud execution fallback using Piston API
+- Local runtime execution using WebSocket server
+- Interactive stdin support
+- HTML project preview endpoint
+- Automatic fallback between local & cloud execution
 
 ### GitHub integration
-- GitHub OAuth connection
-- Import repository files into a room
+- GitHub OAuth login
+- Import repository into a room
 - Push room changes back to GitHub
 
-### Device save/export
-- Web: download full project as ZIP
-- Flutter app: pick local folder and sync files to device
-- iOS app-documents fallback for local save path
+### Save & export
+- Web: Download full project as ZIP
+- Flutter: Save project to local device folder
 
-### Maintenance
-- Stale room cleanup support (temporary and inactive room handling)
-- Room/file/member cleanup flow for deactivated rooms
+---
 
-## Tech stack
+## Tech Stack
 
-- Frontend: React 19, Vite, Framer Motion, Monaco Editor, Tailwind-style utility classes
-- Backend services: Supabase (Auth, Postgres, Realtime, Storage)
-- Runtime: Node.js + `ws` WebSocket server
-- App wrapper: Flutter + InAppWebView + App Links
+- **Frontend:** React 19, Vite, Framer Motion, Monaco Editor
+- **Backend:** Supabase (Auth, PostgreSQL, Realtime, Storage)
+- **Runtime Server:** Node.js + WebSocket (`ws`)
+- **App Wrapper:** Flutter + InAppWebView + App Links
 
-## Repository layout
+---
+
+## Repository Layout
 
 ```txt
 .
-|- src/                      # Web app
-|  |- pages/                 # Landing, room-create, editor, upload, etc.
-|  |- function/              # Auth, rooms, files, editor helpers
-|  |- Components/            # Shared UI components
-|  `- utils/route.jsx        # Client routes
-|- runtime-server/
-|  |- server/index.js        # Local runtime + preview websocket/http server
-|  `- Dockerfile             # Runtime container build
-|- codesync/                 # Flutter wrapper app
-|  |- lib/main.dart
-|  `- .github/workflows/     # Mobile/desktop release workflows
-`- README.md
+├─ src/                       # Web app
+│  ├─ pages/                  # Landing, room-create, editor, upload, etc.
+│  ├─ function/               # Auth, rooms, files, editor helpers
+│  ├─ Components/             # Shared UI components
+│  └─ utils/route.jsx         # Client routes
+├─ runtime-server/
+│  ├─ server/index.js         # Local runtime + preview server
+│  └─ Dockerfile              # Runtime container
+├─ codesync/                  # Flutter wrapper app
+│  ├─ lib/main.dart
+│  └─ .github/workflows/      # App release workflows
+└─ README.md
+
 ```
+## Server
 
-## Database objects used
+Code Sync uses a **separate runtime execution server** to run code interactively and provide HTML previews.  
+This server communicates with the web editor via **WebSocket** and HTTP.
 
-Main tables queried by app logic:
-- `rooms`
-- `room_members`
-- `files`
-- `profiles`
-- `folders` (best-effort cleanup path)
+### Server Repository
+- **GitHub:** https://github.com/bhavneetv/code-sync-server
 
-Main storage bucket:
-- `user-files`
+You can self-host this server or deploy it to any Node.js–compatible platform.
 
-## Environment variables
+---
 
-Create a root `.env` file for the web app:
+## What the Server Does
 
-```env
-VITE_Supabase_URL="https://<project>.supabase.co"
-VITE_Supabase_Anon_Key="<anon-key>"
-VITE_RUNTIME_WS_URL="wss://<your-runtime-host>"
+- Executes user code securely in isolated processes
+- Supports interactive stdin / stdout
+- Provides WebSocket-based execution API
+- Serves HTML project previews
+- Acts as the primary runtime before cloud fallback
 
-# Optional overrides
-VITE_AUTH_REDIRECT_ORIGIN="https://codesyncio.in"
-VITE_APP_DEEP_LINK="codesync://auth-callback"
-```
+---
 
-## Local development process
+## Supported Languages
 
-### 1) Install dependencies
+- Python  
+- Node.js  
+- Java  
+- C  
+- C++  
+- Ruby  
+- Prolog  
 
+---
+
+## Run Server Locally
+
+### 1) Clone the server repository
 ```bash
+git clone https://github.com/bhavneetv/code-sync-server.git
+cd code-sync-server
+
 npm install
-```
 
-### 2) Start runtime server (recommended for interactive run/preview)
-
-In terminal A:
-
-```bash
-npm run server
-```
-
-This starts `runtime-server/server/index.js` on port `3001` by default.
-
-### 3) Start web app
-
-In terminal B:
-
-```bash
-npm run dev
-```
-
-### 4) Open app
-
-Use the local URL printed by Vite.
-
-## Runtime server process
-
-### Run directly
-
-```bash
-cd runtime-server
-npm install
 npm start
+
+http://localhost:3001
+
+VITE_RUNTIME_WS_URL=ws://localhost:3001
 ```
 
-### Run with Docker
+## Cloud Fallback Execution
 
-```bash
-cd runtime-server
-docker build -t code-sync-runtime .
-docker run --rm -p 3001:3001 code-sync-runtime
-```
+Code Sync includes an automatic **cloud execution fallback** to ensure code can still be run even when the local runtime server is unavailable.
 
-Runtime server supports:
-- Python
-- Node.js
-- Java
-- C
-- C++
-- Prolog
-- Ruby
+### When Cloud Fallback Is Used
+- Runtime server is offline or unreachable
+- WebSocket connection fails
+- Server execution times out
+- Unsupported execution mode on client device
 
-And provides:
-- WebSocket command execution
-- `/preview/<id>/...` static preview route for HTML projects
+When this happens, the editor seamlessly switches to cloud execution without interrupting the user workflow.
 
-## Web build process
+---
 
-```bash
-npm run build
-npm run preview
-```
+## Cloud Execution Provider
 
-Deploy the generated `dist/` as a static site.
+- Powered by the **Piston API**
+- Secure, sandboxed execution environment
+- Stateless execution (no persistent filesystem)
+- Best suited for quick runs and single-file execution
 
-## Flutter app process (Android/iOS/Windows wrapper)
+---
 
-From `codesync/`:
+## Cloud Fallback Behavior
+
+- Automatically retries execution using cloud runner
+- Multi-file projects fall back to active file execution if needed
+- Standard input is supported (limited by provider constraints)
+- Execution output is streamed back to the editor
+
+---
+
+## Limitations of Cloud Fallback
+
+- No persistent storage between runs
+- Limited execution time and memory
+- Multi-file and project-based execution is restricted
+- Not suitable for long-running or server-based programs
+
+For full project execution, the **local runtime server** is recommended.
+
+---
+
+## Flutter App Support
+
+Code Sync is also available as a **Flutter-based wrapper app** for mobile and desktop platforms.
+
+### Flutter Repository
+- **GitHub:** https://github.com/bhavneetv/code-sync-flutter
+
+### Available Platforms
+- Android
+- iOS
+- Windows
+
+### App Capabilities
+- Full access to the Code Sync web editor
+- OAuth login inside in-app WebView
+- Deep-link handling for OAuth return
+- Local file export to device storage
+- Folder picker support (platform dependent)
+
+---
+
+## Download App Builds
+
+Pre-built APKs and desktop builds are available via **GitHub Releases**:
+
+- https://github.com/bhavneetv/code-sync-flutter/releases
+
+These builds are generated automatically using GitHub Actions.
+
+---
+
+## Run Flutter App Locally
+
+From the `code-sync-flutter` repository:
 
 ```bash
 flutter pub get
-flutter run --dart-define=APP_URL=https://codesyncio.in/
+flutter run --dart-define=APP_URL=https://codesyncioo.netlify.app/
+flutter build apk --release --dart-define=APP_URL=https://codesyncioo.netlify.app/
+flutter build ios --release --no-codesign --dart-define=APP_URL=https://codesyncioo.netlify.app/
+flutter build windows --release --dart-define=APP_URL=https://codesyncioo.netlify.app/
 ```
 
-Release builds:
+---
 
-```bash
-flutter build apk --release --dart-define=APP_URL=https://codesyncio.in/
-flutter build ios --release --no-codesign --dart-define=APP_URL=https://codesyncio.in/
-flutter build windows --release --dart-define=APP_URL=https://codesyncio.in/
-```
+## Developed By
 
-## Release workflows process
+**Bhavneet Verma**  
+- GitHub: https://github.com/bhavneetv  
+- LinkedIn: https://www.linkedin.com/in/bhavneet-verma/
 
-Workflow files in `codesync/.github/workflows/`:
-- `android-relese.yml` builds Android APK and publishes release asset
-- `window.yml` builds Windows app and uploads zipped artifact
-- `dart.yml` currently contains an iOS IPA release flow
+---
 
-Current Android/Windows workflows are tag-triggered for `v1.1` plus manual dispatch. Update tag patterns before broader release versioning.
+## License
 
-## OAuth redirect setup process (Supabase)
+This project is licensed under the **MIT License**.
 
-Configure Supabase Auth `Site URL` and redirect URLs to include your domains and deep link.
+You are free to:
+- Use the project for personal or commercial purposes
+- Modify and distribute the code
+- Include it in your own projects
 
-Typical allowed redirects:
-- `https://codesyncio.in/`
-- `https://www.codesyncio.in/`
-- `https://codesyncioo.netlify.app/`
-- `https://www.codesyncioo.netlify.app/`
-- `codesync://auth-callback`
+See the `LICENSE` file in this repository for full license text.
 
-## User flow process
+---
 
-1. Open landing page
-2. Create room / join room / solo room
-3. Collaborate in editor (live users, cursors, file updates)
-4. Run code (local runtime or cloud fallback)
-5. Save/export/share, optionally sync GitHub
 
-## Notes and troubleshooting
-
-- If local runtime is unreachable, editor falls back to cloud run mode for supported languages.
-- If cloud run returns HTTP 400 for multi-file payloads, editor retries with active file.
-- For app OAuth return issues, verify deep-link registration and Supabase redirect list.
-- For refresh/open stale file issues, peer file-content request/response now resolves content by request ID.
+  
