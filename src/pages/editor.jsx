@@ -1575,7 +1575,7 @@ export default function CodeEditorPage() {
   const getRuntimeWsCandidates = () => {
     const candidates = [];
     const fromEnv = normalizeRuntimeWsUrl(import.meta?.env?.VITE_RUNTIME_WS_URL || '');
-    const defaultCloudRuntime = 'wss://codesync-server-production-edf0.up.railway.app';
+    const defaultCloudRuntime = 'wss://codesync-server-pf6m.onrender.com';
 
     if (fromEnv) {
       candidates.push(fromEnv);
@@ -1607,7 +1607,7 @@ export default function CodeEditorPage() {
     return [...new Set(candidates)];
   };
 
-  const getRuntimeWsUrl = () => getRuntimeWsCandidates()[0] || 'wss://codesync-server-production-edf0.up.railway.app';
+  const getRuntimeWsUrl = () => getRuntimeWsCandidates()[0] || 'wss://codesync-server-pf6m.onrender.com';
 
   const getRuntimeHttpUrl = () => {
     const wsUrl = runtimeSocketRef.current?.url || getRuntimeWsUrl();
@@ -1889,6 +1889,37 @@ export default function CodeEditorPage() {
     };
   };
 
+  const findJavaMainFileName = (files, preferredName = '') => {
+    const javaMainRegex = /\b(public\s+static|static\s+public)\s+void\s+main\s*\(\s*(?:String\s*(?:\[\s*\]|\.\.\.)\s+[A-Za-z_]\w*|String\s+[A-Za-z_]\w*\s*\[\s*\])\s*\)/m;
+    const normalizedFiles = Array.isArray(files) ? files : [];
+    const ordered = [];
+
+    if (preferredName) {
+      const preferred = normalizedFiles.find((file) => file?.name === preferredName);
+      if (preferred) ordered.push(preferred);
+    }
+
+    for (const file of normalizedFiles) {
+      if (!ordered.includes(file)) ordered.push(file);
+    }
+
+    for (const file of ordered) {
+      if (!file?.name?.toLowerCase?.().endsWith('.java')) continue;
+      if (javaMainRegex.test(file?.content || '')) return file.name;
+    }
+
+    const firstJava = ordered.find((file) => file?.name?.toLowerCase?.().endsWith('.java'));
+    return firstJava?.name || preferredName || normalizedFiles[0]?.name || 'Main.java';
+  };
+
+  const resolveRuntimeMainFile = (language, files, preferredName = '') => {
+    if (language === 'java') {
+      return findJavaMainFileName(files, preferredName);
+    }
+
+    return preferredName || files?.[0]?.name || 'main.txt';
+  };
+
   const readRuntimeHttpError = async (response) => {
     try {
       const bodyText = await response.text();
@@ -1953,6 +1984,9 @@ export default function CodeEditorPage() {
         if (!response.ok) {
           const detail = await readRuntimeHttpError(response);
           if (response.status === 400 && allow400Retry && requestPayload.files.length > 1) {
+            if (['java', 'c', 'cpp'].includes(requestPayload.language)) {
+              throw new Error(`Cloud runner rejected multi-file ${requestPayload.language.toUpperCase()} project (400). Use Server runtime for multi-file execution.`);
+            }
             setTerminalOutput(prev => [...prev, {
               type: 'system',
               content: 'Cloud runner rejected multi-file request (400). Retrying with active file only...',
@@ -2137,7 +2171,8 @@ export default function CodeEditorPage() {
     const shouldUseLocal =
       runMode === 'local' ||
       (runMode === 'auto' && needsInput) ||
-      (runMode === 'auto' && isModuleJs);
+      (runMode === 'auto' && isModuleJs) ||
+      (runMode === 'auto' && language === 'java');
 
     if (shouldUseLocal && localLanguageMap[language]) {
       try {
@@ -2166,11 +2201,12 @@ export default function CodeEditorPage() {
             timestamp: new Date()
           }]);
         }, 30000);
+          const runtimeMainFile = resolveRuntimeMainFile(language, payload.files, activePath || currentActiveFile.name);
           socket.send(JSON.stringify({
             type: 'run',
             language: localLanguageMap[language],
             files: payload.files,
-            main: activePath || currentActiveFile.name
+            main: runtimeMainFile
           }));
           return;
         } catch (err) {
