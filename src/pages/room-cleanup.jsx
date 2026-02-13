@@ -25,8 +25,9 @@ export default function RoomCleanupPage() {
 
       const summary = response.summary || {};
       const deactivated = numberOrZero(summary.deactivatedInactive) + numberOrZero(summary.deactivatedTemporary);
+      const storageCleaned = numberOrZero(summary.storageOnlyCleanedRooms);
       showToast(
-        `Cleanup done. Deactivated ${deactivated} room(s).`,
+        `Cleanup done. Deactivated ${deactivated} room(s), storage-cleaned ${storageCleaned} room(s).`,
         'success',
         3000
       );
@@ -49,7 +50,7 @@ export default function RoomCleanupPage() {
         <div>
           <h1 className="text-2xl font-bold">Room Cleanup</h1>
           <p className="text-sm text-slate-400 mt-2">
-            Auto-runs on page load. Cleans temporary rooms after 48h and inactive rooms after 14 days.
+            Auto-runs on page load. Cleans temporary rooms after 48h, normal rooms after 14 days, and storage files after 7 days of no active members.
           </p>
         </div>
 
@@ -77,6 +78,8 @@ export default function RoomCleanupPage() {
             <div>Scanned: {numberOrZero(summary.scanned)}</div>
             <div>Deactivated (Inactive): {numberOrZero(summary.deactivatedInactive)}</div>
             <div>Deactivated (Temporary): {numberOrZero(summary.deactivatedTemporary)}</div>
+            <div>Storage-Only Cleaned Rooms: {numberOrZero(summary.storageOnlyCleanedRooms)}</div>
+            <div>Storage Objects Removed: {numberOrZero(summary.storageObjectsRemoved)}</div>
             <div>Failures: {Array.isArray(summary.failures) ? summary.failures.length : 0}</div>
 
             {Array.isArray(summary.failures) && summary.failures.length > 0 && (

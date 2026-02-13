@@ -255,6 +255,7 @@ export default function CodeEditorPage() {
   const [copiedCode, setCopiedCode] = useState(false);
   const [selectParentModal, setSelectParentModal] = useState({ show: false, mode: 'file' });
   const [openContextMenuId, setOpenContextMenuId] = useState(null);
+  const [mobileClipboardMenuOpen, setMobileClipboardMenuOpen] = useState(false);
 
   // Loading states
   const [isCreatingFile, setIsCreatingFile] = useState(false);
@@ -295,6 +296,7 @@ export default function CodeEditorPage() {
   const lastSavedContentRef = useRef({});
   const broadcastDebounceRef = useRef({});
   const terminalHeightBeforeMaxRef = useRef(200);
+  const mobileClipboardMenuRef = useRef(null);
 
   const [isDesktopDrawer, setIsDesktopDrawer] = useState(typeof window !== 'undefined' && window.innerWidth >= 1024);
 
@@ -316,6 +318,33 @@ export default function CodeEditorPage() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  useEffect(() => {
+    if (!mobileClipboardMenuOpen) return;
+
+    const handleClickOutside = (event) => {
+      const menuRoot = mobileClipboardMenuRef.current;
+      if (menuRoot && !menuRoot.contains(event.target)) {
+        setMobileClipboardMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setMobileClipboardMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside, { passive: true });
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [mobileClipboardMenuOpen]);
 
   // Fetch room data from Supabase
   const fetchRoomData = async () => {
@@ -2341,6 +2370,113 @@ export default function CodeEditorPage() {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
+  const withEditorAndSelection = () => {
+    const editor = editorRef.current;
+    if (!editor) {
+      showToast('Editor is not ready.', 'error', 2000);
+      return null;
+    }
+
+    const model = editor.getModel();
+    const selection = editor.getSelection();
+    if (!model || !selection) {
+      showToast('No active editor selection.', 'error', 2000);
+      return null;
+    }
+
+    return { editor, model, selection };
+  };
+
+  const handleMobileClipboardCopy = async () => {
+    setMobileClipboardMenuOpen(false);
+    const context = withEditorAndSelection();
+    if (!context) return;
+
+    const { model, selection, editor } = context;
+    const selectedText = model.getValueInRange(selection);
+
+    if (!selectedText) {
+      showToast('Select text to copy.', 'error', 2000);
+      return;
+    }
+
+    if (!navigator.clipboard?.writeText) {
+      showToast('Clipboard write is not supported on this device.', 'error', 2500);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(selectedText);
+      showToast('Copied to clipboard.', 'success', 1500);
+      editor.focus();
+    } catch (err) {
+      showToast(`Copy failed: ${err.message}`, 'error', 2500);
+    }
+  };
+
+  const handleMobileClipboardCut = async () => {
+    setMobileClipboardMenuOpen(false);
+    const context = withEditorAndSelection();
+    if (!context) return;
+
+    const { editor, model, selection } = context;
+    const selectedText = model.getValueInRange(selection);
+
+    if (!selectedText) {
+      showToast('Select text to cut.', 'error', 2000);
+      return;
+    }
+
+    if (!navigator.clipboard?.writeText) {
+      showToast('Clipboard write is not supported on this device.', 'error', 2500);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(selectedText);
+      editor.executeEdits('mobile-clipboard-cut', [{
+        range: selection,
+        text: '',
+        forceMoveMarkers: true,
+      }]);
+      showToast('Cut to clipboard.', 'success', 1500);
+      editor.focus();
+    } catch (err) {
+      showToast(`Cut failed: ${err.message}`, 'error', 2500);
+    }
+  };
+
+  const handleMobileClipboardPaste = async () => {
+    setMobileClipboardMenuOpen(false);
+    const context = withEditorAndSelection();
+    if (!context) return;
+
+    const { editor, selection } = context;
+
+    if (!navigator.clipboard?.readText) {
+      showToast('Clipboard read is not supported on this device.', 'error', 2500);
+      return;
+    }
+
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      if (!clipboardText) {
+        showToast('Clipboard is empty.', 'error', 2000);
+        return;
+      }
+
+      editor.executeEdits('mobile-clipboard-paste', [{
+        range: selection,
+        text: clipboardText,
+        forceMoveMarkers: true,
+      }]);
+      showToast('Pasted from clipboard.', 'success', 1500);
+      editor.focus();
+    } catch (err) {
+      showToast(`Paste failed: ${err.message}`, 'error', 2500);
+    }
+  };
+
   const handleKickUser = async (userId) => {
     if (!isOwner) return;
 
@@ -2903,6 +3039,47 @@ export default function CodeEditorPage() {
               </span>
             </button>
           )}
+
+          <div className="relative sm:hidden" ref={mobileClipboardMenuRef}>
+            <button
+              onClick={() => setMobileClipboardMenuOpen((prev) => !prev)}
+              className={`p-2 rounded-lg transition-all modern-button flex-shrink-0 ${mobileClipboardMenuOpen ? 'bg-slate-700/70 text-emerald-300' : 'hover:bg-slate-700/50'}`}
+              title="Clipboard actions"
+            >
+              <Edit2 className="w-4 h-4" />
+            </button>
+
+            <AnimatePresence>
+              {mobileClipboardMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute right-0 top-full mt-1.5 w-36 glass-strong rounded-lg border border-slate-700/70 shadow-xl z-50 overflow-hidden"
+                >
+                  <button
+                    onClick={handleMobileClipboardCopy}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-700/60 transition-colors"
+                  >
+                    Copy
+                  </button>
+                  <button
+                    onClick={handleMobileClipboardCut}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-700/60 transition-colors"
+                  >
+                    Cut
+                  </button>
+                  <button
+                    onClick={handleMobileClipboardPaste}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-700/60 transition-colors"
+                  >
+                    Paste
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
 
           <button
             onClick={() => setShowUsersModal(true)}
