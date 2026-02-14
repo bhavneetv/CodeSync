@@ -1645,6 +1645,30 @@ export default function CodeEditorPage() {
     return wsUrl;
   };
 
+  const resolveRuntimePreviewUrl = (rawUrl) => {
+    const baseUrl = getRuntimeHttpUrl();
+    const value = (rawUrl || '').toString().trim();
+
+    if (!value) return baseUrl;
+    if (/^https?:\/\//i.test(value)) return value;
+
+    const normalized = value
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '/');
+
+    try {
+      const base = new URL(baseUrl);
+      const origin = `${base.protocol}//${base.host}/`;
+      const resolved = new URL(normalized, origin);
+      resolved.pathname = resolved.pathname.replace(/\/{2,}/g, '/');
+      return resolved.toString();
+    } catch {
+      const left = baseUrl.replace(/\/+$/, '');
+      const right = normalized.replace(/^\/+/, '');
+      return right ? `${left}/${right}` : left;
+    }
+  };
+
   const attachRuntimeSocketHandlers = (socket) => {
     socket.onclose = () => {
       runtimeSocketRef.current = null;
@@ -1663,10 +1687,7 @@ export default function CodeEditorPage() {
         if (pending && msg.requestId === pending.requestId) {
           clearTimeout(pending.timeout);
           previewRequestRef.current = null;
-          const baseUrl = getRuntimeHttpUrl();
-          const previewUrl = msg.url?.startsWith('http')
-            ? msg.url
-            : `${baseUrl}${msg.url || ''}`;
+          const previewUrl = resolveRuntimePreviewUrl(msg.url);
           setHtmlPreviewUrl(previewUrl);
           setTerminalOutput(prev => [...prev, {
             type: 'link',
@@ -2477,6 +2498,28 @@ export default function CodeEditorPage() {
     }
   };
 
+  const handleMobileClipboardSelectAll = () => {
+    setMobileClipboardMenuOpen(false);
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+
+    if (!editor || !model) {
+      showToast('Editor is not ready.', 'error', 2000);
+      return;
+    }
+
+    const lineCount = model.getLineCount();
+    const lastLineLength = model.getLineMaxColumn(lineCount);
+
+    editor.setSelection({
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: lineCount,
+      endColumn: lastLineLength,
+    });
+    editor.focus();
+  };
+
   const handleKickUser = async (userId) => {
     if (!isOwner) return;
 
@@ -3075,6 +3118,12 @@ export default function CodeEditorPage() {
                     className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-700/60 transition-colors"
                   >
                     Paste
+                  </button>
+                  <button
+                    onClick={handleMobileClipboardSelectAll}
+                    className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-700/60 transition-colors"
+                  >
+                    Select All
                   </button>
                 </motion.div>
               )}
