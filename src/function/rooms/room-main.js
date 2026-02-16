@@ -23,8 +23,6 @@ function generateRoomCode() {
     return `${part1}-${part2}-${part3}`;
 }
 
-const Link = generateRoomCode();
-
 const isKickedMember = (kickedUser) => {
     if (kickedUser === true) return true;
     if (kickedUser?.kicked === true) return true;
@@ -62,6 +60,7 @@ export async function createRoom(name, password = null , solo = false) {
     }
 
     const roomCode = generateRandomString(6);
+    const roomLink = generateRoomCode();
 
 
     const { data: room, error } = await supabase
@@ -71,7 +70,7 @@ export async function createRoom(name, password = null , solo = false) {
             room_password: password,
             room_code: roomCode,
             type: roomType,
-            room_link: Link,
+            room_link: roomLink,
             owner_id: user.id,
             is_room_new: true,
             last_join: new Date().toISOString(),
@@ -96,7 +95,7 @@ export async function createRoom(name, password = null , solo = false) {
 
     return {
         success: true,
-        roomId: Link,
+        roomId: room.room_link,
         token,
         type: roomType,
         isAnonymous
@@ -115,7 +114,6 @@ export const handleRoomJoin = async (
     }
 
     const user = (await supabase.auth.getUser()).data.user;
-    const isAnonymousUser = !!user?.is_anonymous;
 
 
     const { data: room } = await supabase
@@ -154,22 +152,18 @@ export const handleRoomJoin = async (
         if (isKickedMember(member.kicked_user)) {
             return { status: "kicked" };
         }
-        const updatePayload = {
-            join_token: token,
-            joined_at: new Date()
-        };
-        if (!isAnonymousUser && member.role === "guest") {
-            updatePayload.role = "editor";
-        }
         await supabase
             .from("room_members")
-            .update(updatePayload)
+            .update({
+            join_token: token,
+            joined_at: new Date()
+        })
             .eq("id", member.id);
     } else {
         await supabase.from("room_members").insert({
             room_id: room.id,
             user_id: user.id,
-            role: isAnonymousUser ? "guest" : "editor",
+            role: "guest",
             join_token: token
         });
     }

@@ -10,33 +10,47 @@ export async function saveOffline(ctx) {
     setOpenTabs,
     lastSavedIdsRef,
     showToast,
-    setIsSaving
+    setIsSaving,
+    saveInProgressRef,
+    silentSuccess = false
   } = ctx;
 
   if (!canEdit) {
-    return;
+    return { saved: 0, failed: 0, skipped: 0 };
   }
 
   const dirtyTabs = openTabs.filter(t => t.isDirty);
   if (dirtyTabs.length === 0) {
-    return;
+    return { saved: 0, failed: 0, skipped: 0 };
   }
 
+  if (saveInProgressRef?.current) {
+    return { saved: 0, failed: 0, skipped: dirtyTabs.length, locked: true };
+  }
+
+  if (saveInProgressRef) {
+    saveInProgressRef.current = true;
+  }
   setIsSaving(true);
 
   try {
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    const savePromises = dirtyTabs.map(async (tab) => {
-      const content = allFileContents[tab.id] || tab.content || '';
+    const saveTab = async (tab) => {
+      const content = allFileContents?.[tab.id] ?? tab.content ?? '';
 
       // Only save if content actually changed from last saved version
       if (lastSavedContentRef.current[tab.id] === content) {
         return { tabId: tab.id, success: true, skipped: true };
       }
 
-      let result = await updateEncryptedFileReliable(tab.fullPath, content);
-      if (!result.success) {
-        result = await updateEncryptedFile(tab.fullPath, content);
+      let result = { success: false, error: 'Save not attempted' };
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        result = await updateEncryptedFileReliable(tab.fullPath, content);
+        if (!result.success) {
+          result = await updateEncryptedFile(tab.fullPath, content);
+        }
+        if (result.success) break;
+        await sleep(160 * (attempt + 1));
       }
 
       if (result.success) {
@@ -64,9 +78,16 @@ export async function saveOffline(ctx) {
       }
 
       return { tabId: tab.id, success: result.success, error: result.error };
-    });
+    };
 
-    const results = await Promise.all(savePromises);
+    const results = [];
+    const batchSize = 4;
+    for (let i = 0; i < dirtyTabs.length; i += batchSize) {
+      const batch = dirtyTabs.slice(i, i + batchSize);
+      const batchResults = await Promise.all(batch.map(saveTab));
+      results.push(...batchResults);
+    }
+
     const failed = results.filter(r => !r.success && !r.skipped);
     const saved = results.filter(r => r.success && !r.skipped);
     const savedIds = new Set(saved.map(r => r.tabId));
@@ -79,7 +100,7 @@ export async function saveOffline(ctx) {
       lastSavedIdsRef.current = new Set(savedIds);
     }
 
-    if (saved.length > 0) {
+    if (saved.length > 0 && !silentSuccess) {
       showToast(`Saved ${saved.length} file(s)`, 'success');
     }
 
@@ -88,10 +109,19 @@ export async function saveOffline(ctx) {
       showToast(`Failed to save ${failed.length} file(s)`, 'error');
     }
 
+    return {
+      saved: saved.length,
+      failed: failed.length,
+      skipped: results.filter(r => r.skipped).length
+    };
   } catch (err) {
     console.error('Failed to save:', err);
     showToast(`Failed to save files: ${err.message}`, 'error');
+    return { saved: 0, failed: dirtyTabs.length, skipped: 0, error: err.message };
   } finally {
+    if (saveInProgressRef) {
+      saveInProgressRef.current = false;
+    }
     setIsSaving(false);
   }
 }

@@ -458,8 +458,13 @@ const LandingPage = () => {
       gradient: 'from-purple-500 to-pink-500'
     }
   ];
-  function handlePage() {
-    window.location.href = '/create-room';
+  function handlePage(view = 'main') {
+    const normalized = (view || 'main').toString().trim().toLowerCase();
+    if (normalized === 'main') {
+      window.location.href = '/create-room';
+      return;
+    }
+    window.location.href = `/create-room?view=${normalized}`;
   }
 
  
@@ -469,14 +474,14 @@ const LandingPage = () => {
       icon: <Plus className="w-8 h-8 sm:w-10 h-10 text-white" />,
       title: 'Create Room',
       description: 'Start a new coding session',
-      action: handlePage,
+      action: () => handlePage('createe'),
       gradient: 'from-blue-500 to-cyan-500'
     },
     {
       icon: <UserPlus className="w-8 h-8 sm:w-10 h-10 text-white" />,
       title: 'Join Room',
       description: 'Enter an existing room',
-      action: () => handlePage(),
+      action: () => handlePage('join'),
       gradient: 'from-purple-500 to-pink-500'
     },
     {
@@ -626,11 +631,20 @@ const LandingPage = () => {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => handlePage()}
+                onClick={() => handlePage('createe')}
                 className="px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 shadow-lg shadow-blue-500/50 transition-all"
               >
                 <Plus className="w-5 h-5 sm:w-6 h-6" />
                 <span>Create Room</span>
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => handlePage('join')}
+                className="px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 rounded-xl font-semibold text-base sm:text-lg flex items-center justify-center space-x-2 shadow-lg shadow-purple-500/40 transition-all"
+              >
+                <UserPlus className="w-5 h-5 sm:w-6 h-6" />
+                <span>Join Room</span>
               </motion.button>
               <motion.button
                 whileHover={{ scale: 1.05 }}
@@ -1258,7 +1272,7 @@ const LandingPage = () => {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => handlePage()}
+              onClick={() => handlePage('createe')}
               className="px-8 sm:px-10 py-3.5 sm:py-5 bg-gradient-to-r from-blue-500 via-cyan-500 to-emerald-500 hover:from-blue-600 hover:via-cyan-600 hover:to-emerald-600 rounded-xl font-semibold text-base sm:text-lg lg:text-xl flex items-center justify-center space-x-2 sm:space-x-3 shadow-lg shadow-blue-500/50 transition-all mx-auto"
             >
               <Plus className="w-5 h-5 sm:w-6 lg:w-7 h-6 lg:h-7" />

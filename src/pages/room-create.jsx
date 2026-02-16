@@ -1,18 +1,27 @@
-import React, { useState, useEffect, use } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import supabase from '../supabaseClient.js';
 import { Terminal, Users, Plus, ArrowRight, Loader2, Lock, Globe, FolderGit2, Clock, User, X, Pencil, LogOut, LogIn } from 'lucide-react';
 import { createRoom } from '../function/rooms/room-main.js';
 import { handleRoomJoin } from '../function/rooms/room-main.js';
-import { loginWithGithub, loginWithGithubReturn, syncGithubTokenToProfile } from '../function/login/auth';
+import { loginWithGithubReturn, syncGithubTokenToProfile } from '../function/login/auth';
 import { fetchAllGithubRepos, getGithubToken, importRepoContents } from '../function/files/github-handle';
-import { isAnyLogin } from '../function/login/isLoggin.js';
-import { set } from 'lodash';
 import { showToast } from '../Components/toast-notification.jsx';
+
+const normalizeCreateRoomView = (rawView) => {
+  const view = (rawView || '').toString().trim().toLowerCase();
+  if (view === 'join') return 'join';
+  if (view === 'create' || view === 'createe' || view === 'create_details') return 'create_details';
+  if (view === 'github_select') return 'github_select';
+  return 'main';
+};
 
 const RoomCreate = () => {
   // Views: 'main', 'join', 'create_details', 'github_select'
-  const [view, setView] = useState('main');
+  const [view, setView] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeCreateRoomView(params.get('view'));
+  });
   const [loading, setLoading] = useState(false);
   const [joinLoading, setJoinLoading] = useState(false);
   const [joiningRoomCode, setJoiningRoomCode] = useState('');
@@ -101,7 +110,7 @@ const RoomCreate = () => {
         try {
           const redirect = JSON.parse(redirectRaw);
           if (redirect?.view) {
-            setView(redirect.view);
+            setView(normalizeCreateRoomView(redirect.view));
             setPendingGithubRestore(true);
           }
         } catch (e) {
@@ -245,7 +254,7 @@ const RoomCreate = () => {
             roomLink: room.room_link,
             roomName: room.room_name || "Unnamed Room",
             joinedAt: member.joined_at,
-            ownerName: isOwner ? "You" : (ownerProfile?.name || "Owner"),
+            ownerName: isOwner ? "YOU" : (ownerProfile?.name || "Owner"),
             hasPassword
           };
         }).filter(Boolean);
@@ -280,7 +289,7 @@ const RoomCreate = () => {
         roomLink: room.room_link,
         roomName: room.room_name || "Unnamed Room",
         joinedAt: room.created_at,
-        ownerName: "You",
+        ownerName: "YOU",
         hasPassword
       });
       });

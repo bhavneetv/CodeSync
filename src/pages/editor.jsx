@@ -5,25 +5,27 @@ import {
   ChevronRight, ChevronDown, File, Folder, X, Menu, Terminal as TerminalIcon,
   Maximize2, Minimize2, AlertTriangle, Crown, Shield, LogOut,
   FileCode, FileJson, FileText, Image as ImageIcon, Database, Github, GripVertical,
-  Loader2, Download, MessageCircle, Send, Copy, Check, Key, UserX, UserPlus, RefreshCw,
+  Loader2, Download, MessageCircle, Send, Copy, Check, Key, UserX, UserPlus, UserMinus, RefreshCw,
   CloudUpload, HardDrive
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import { getRoomFiles, buildFileTree, readEncryptedFile, createEncryptedFile, updateEncryptedFile, updateEncryptedFileReliable, deleteEncryptedFile, renameEncryptedFile, deleteFolder } from '../function/files/create-file';
 import supabase from '../supabaseClient';
 import { isRoomValid } from '../function/rooms/upload-page';
-import { decrypt } from '../function/login/encryption';
 import { showToast } from '../Components/toast-notification.jsx';
 import { saveOffline, createFile, createFolder, renameItem, deleteItem } from '../function/editor/editor-files';
 import { pushToGitHub } from '../function/editor/editor-github';
 import { pickDownloadPath as pickDownloadPathExternal, handleSaveToDevice as handleSaveToDeviceExternal, handleDownloadProjectZip as handleDownloadProjectZipExternal } from '../function/editor/editor-download';
-import { set } from 'lodash';
 import { deleteRoom } from '../function/rooms/room-functions.js';
 
 // Cursor colors for different users
 const CURSOR_COLORS = [
-  '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+  '#3B82F6', '#101bb9', '#F59E0B', '#EF4444', '#8B5CF6',
   '#EC4899', '#14B8A6', '#F97316', '#06B6D4', '#84CC16',
+  '#0EA5E9', '#22C55E', '#A855F7', '#F43F5E', '#EAB308',
+  '#F97316', '#14B8A6', '#6366F1', '#D946EF', '#FB7185',
+  '#c9d42d', '#237e44', '#60A5FA', '#FACC15', '#C084FC',
+  '#34D399', '#F87171', '#38BDF8', '#A3E635', '#F472B6',
 ];
 
 // Modern file type icons mapping
@@ -50,7 +52,7 @@ const fileIcons = {
   default: { icon: File, color: 'text-slate-400' }
 };
 
-// Language mapping for Piston API
+// Language mapping for code execution
 const LANGUAGE_MAP = {
   'js': 'javascript',
   'jsx': 'javascript',
@@ -58,12 +60,14 @@ const LANGUAGE_MAP = {
   'tsx': 'typescript',
   'py': 'python',
   'rb': 'ruby',
+  'lua': 'lua',
+  'pm': 'perl',
+  'perl': 'perl',
   'java': 'java',
   'cpp': 'c++',
   'c': 'c',
   'pl': 'prolog',
   'cs': 'csharp',
-  'rb': 'ruby',
   'go': 'go',
   'rs': 'rust',
   'php': 'php',
@@ -74,6 +78,33 @@ const LANGUAGE_MAP = {
   'sh': 'bash',
 };
 
+const createCollaborationSessionId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const getCloudRunExecuteUrl = () => (import.meta?.env?.VITE_CLOUD_RUN_URL || '').trim();
+const getFreeCloudExecuteUrl = () => (import.meta?.env?.VITE_FREE_CLOUD_URL || 'https://ce.judge0.com/submissions?base64_encoded=false&wait=true').trim();
+const RUNTIME_SERVER_WS_URL = 'wss://codesync-server-pf6m.onrender.com';
+
+const JUDGE0_LANGUAGE_IDS = {
+  python: 113,
+  javascript: 102,
+  java: 91,
+  c: 103,
+  'c++': 105,
+  ruby: 72,
+  prolog: 69,
+  bash: 46,
+  rust: 108,
+  csharp: 51,
+  kotlin: 111,
+  lua: 64,
+  perl: 85,
+};
+
 const isKickedMember = (kickedUser) => {
   if (kickedUser === true) return true;
   if (kickedUser?.kicked === true) return true;
@@ -81,6 +112,29 @@ const isKickedMember = (kickedUser) => {
   if (kickedUser?.kicker_user) return true;
   return false;
 };
+
+const ROLE_ORDER = ['guest', 'editor', 'admin', 'owner'];
+const ROLE_RANK = {
+  owner: 0,
+  admin: 1,
+  editor: 2,
+  guest: 3,
+};
+
+const normalizeRole = (role) => {
+  const nextRole = (role || '').toString().toLowerCase();
+  if (ROLE_ORDER.includes(nextRole)) return nextRole;
+  if (nextRole === 'member') return 'editor';
+  return 'guest';
+};
+
+const toDbRole = (role) => {
+  const normalized = normalizeRole(role);
+  return normalized === 'editor' ? 'member' : normalized;
+};
+
+const formatUserNameForDisplay = (userName, userId, currentUserId) =>
+  userId === currentUserId ? `${userName} (YOU)` : userName;
 
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'pdf',
@@ -220,6 +274,7 @@ export default function CodeEditorPage() {
   const [terminalOutput, setTerminalOutput] = useState([]);
   const [terminalInput, setTerminalInput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [isRuntimeConnecting, setIsRuntimeConnecting] = useState(false);
   const [isTerminalMaximized, setIsTerminalMaximized] = useState(false);
   const [pendingRunRequest, setPendingRunRequest] = useState(null);
   const [isInteractiveRun, setIsInteractiveRun] = useState(false);
@@ -244,6 +299,8 @@ export default function CodeEditorPage() {
   const [remoteCursors, setRemoteCursors] = useState({});
   const [remoteSelections, setRemoteSelections] = useState({});
   const [connectedUsers, setConnectedUsers] = useState([]);
+  const [roomMembers, setRoomMembers] = useState([]);
+  const [isLoadingRoomMembers, setIsLoadingRoomMembers] = useState(false);
   const [allFileContents, setAllFileContents] = useState({}); // Track all file contents
 
   // Modal states
@@ -275,6 +332,8 @@ export default function CodeEditorPage() {
   const realtimeChannelRef = useRef(null);
   const runtimeSocketRef = useRef(null);
   const runtimeConnectPromiseRef = useRef(null);
+  const runtimeCandidateBackoffRef = useRef({});
+  const runtimeConnectNoticeTimeoutRef = useRef(null);
   const runAbortRef = useRef(null);
   const runTimeoutRef = useRef(null);
   const htmlPreviewUrlRef = useRef(null);
@@ -284,17 +343,28 @@ export default function CodeEditorPage() {
   const lastLocalSyncRef = useRef({});
   const hasInitialLocalSyncRef = useRef(false);
   const lastLocalSyncTimeRef = useRef(0);
+  const currentUserIdRef = useRef(null);
+  const currentUserNameRef = useRef('');
+  const currentUserColorRef = useRef(CURSOR_COLORS[0]);
   const isApplyingRemoteChangeRef = useRef(false);
   const suppressRemoteEchoRef = useRef(null);
   const localEditMetaRef = useRef({});
   const remoteVersionBySourceRef = useRef({});
+  const latestPeerResponseMetaRef = useRef({});
   const openTabsRef = useRef([]);
   const allFileContentsRef = useRef({});
   const pendingFileContentRequestsRef = useRef({});
   const activeFileRef = useRef(null);
+  const pendingFallbackRunRef = useRef(null);
   const pendingSaveTimeoutRef = useRef(null);
+  const saveInProgressRef = useRef(false);
   const lastSavedContentRef = useRef({});
   const broadcastDebounceRef = useRef({});
+  const collaborationSessionIdRef = useRef(createCollaborationSessionId());
+  const cursorBroadcastStateRef = useRef({ timeout: null, lastSentAt: 0, payload: null });
+  const selectionBroadcastStateRef = useRef({ timeout: null, lastSentAt: 0, payload: null });
+  const remoteCursorMetaRef = useRef({});
+  const fileTreeReloadTimeoutRef = useRef(null);
   const terminalHeightBeforeMaxRef = useRef(200);
   const mobileClipboardMenuRef = useRef(null);
 
@@ -304,6 +374,21 @@ export default function CodeEditorPage() {
   const currentPlatform = getPlatform();
   const isExecutablePlatform = currentPlatform === 'mobile-app' || currentPlatform === 'windows-app';
   const isDownloadPathSupported = isExecutablePlatform;
+
+  const getActiveRoomRow = async () => {
+    const roomRow = await supabase
+      .from("rooms")
+      .select("id, owner_id")
+      .eq("room_link", roomLink)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (roomRow.error || !roomRow.data?.id) {
+      throw new Error('Room is inactive or unavailable');
+    }
+
+    return roomRow.data;
+  };
 
   const fetchRoomAccess = async () => {
     const roomInfo = await isRoomValid(roomLink);
@@ -392,21 +477,89 @@ export default function CodeEditorPage() {
     }
   };
 
+  const fetchRoomMembers = async ({ silent = false } = {}) => {
+    if (!roomLink) return [];
+
+    if (!silent) {
+      setIsLoadingRoomMembers(true);
+    }
+
+    try {
+      const room = await getActiveRoomRow();
+      const roomId = room.id;
+
+      const { data: membersData, error: membersError } = await supabase
+        .from("room_members")
+        .select("user_id, role, kicked_user, joined_at, last_seen")
+        .eq("room_id", roomId);
+
+      if (membersError) {
+        throw membersError;
+      }
+
+      const memberRows = membersData || [];
+      const profileIds = [...new Set(memberRows.map((member) => member.user_id).filter(Boolean))];
+
+      let profileMap = new Map();
+      if (profileIds.length > 0) {
+        const { data: profilesData, error: profilesError } = await supabase
+          .from("profiles")
+          .select("id, name")
+          .in("id", profileIds);
+        if (!profilesError && Array.isArray(profilesData)) {
+          profileMap = new Map(
+            profilesData.map((profile) => [profile.id, profile.name]).filter(([, name]) => !!name)
+          );
+        }
+      }
+
+      const members = memberRows
+        .map((member) => {
+          const userId = member.user_id;
+          if (!userId) return null;
+          const profileName = profileMap.get(userId);
+          const fallbackGuest = `Guest ${generateGuestNumber(userId)}`;
+          const userName = profileName || fallbackGuest;
+          const role = normalizeRole(member.role);
+          return {
+            userId,
+            userName,
+            role,
+            kicked: isKickedMember(member.kicked_user),
+            kickedData: member.kicked_user,
+            joinedAt: member.joined_at || null,
+            lastSeen: member.last_seen || null,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          const rankDiff = (ROLE_RANK[a.role] ?? 99) - (ROLE_RANK[b.role] ?? 99);
+          if (rankDiff !== 0) return rankDiff;
+          return a.userName.localeCompare(b.userName);
+        });
+
+      setRoomMembers(members);
+      return members;
+    } catch (err) {
+      console.error('Failed to fetch room members:', err);
+      if (!silent) {
+        showToast('Failed to load room members.', 'error', 2000);
+      }
+      return [];
+    } finally {
+      if (!silent) {
+        setIsLoadingRoomMembers(false);
+      }
+    }
+  };
+
   // Fetch download path for current user
   const fetchDownloadPath = async (userId) => {
     try {
       const params = new URLSearchParams(window.location.search);
       const token = params.get("token");
-      const roomRow = await supabase
-        .from("rooms")
-        .select("id")
-        .eq("room_link", roomLink)
-        .eq("active", true)
-        .maybeSingle();
-      if (roomRow.error || !roomRow.data?.id) {
-        throw new Error('Room is inactive or unavailable');
-      }
-      const roomId = roomRow.data.id;
+      const room = await getActiveRoomRow();
+      const roomId = room.id;
 
       const { data, error } = await supabase
         .from('room_members')
@@ -449,16 +602,8 @@ export default function CodeEditorPage() {
     try {
       const params = new URLSearchParams(window.location.search);
       const token = params.get("token");
-      const roomRow = await supabase
-        .from("rooms")
-        .select("id")
-        .eq("room_link", roomLink)
-        .eq("active", true)
-        .maybeSingle();
-      if (roomRow.error || !roomRow.data?.id) {
-        throw new Error('Room is inactive or unavailable');
-      }
-      const roomId = roomRow.data.id;
+      const room = await getActiveRoomRow();
+      const roomId = room.id;
 
       const { data: byToken, error } = await supabase
         .from('room_members')
@@ -513,6 +658,7 @@ export default function CodeEditorPage() {
     if (roomLink) {
       loadFiles();
       fetchRoomData();
+      fetchRoomMembers({ silent: true });
     }
 
     return () => {
@@ -522,10 +668,16 @@ export default function CodeEditorPage() {
       if (pendingSaveTimeoutRef.current) {
         clearTimeout(pendingSaveTimeoutRef.current);
       }
+      if (fileTreeReloadTimeoutRef.current) {
+        clearTimeout(fileTreeReloadTimeoutRef.current);
+        fileTreeReloadTimeoutRef.current = null;
+      }
       if (runtimeSocketRef.current) {
         runtimeSocketRef.current.close();
         runtimeSocketRef.current = null;
       }
+      clearRuntimeConnectNotice();
+      runtimeCandidateBackoffRef.current = {};
       if (runTimeoutRef.current) {
         clearTimeout(runTimeoutRef.current);
         runTimeoutRef.current = null;
@@ -536,12 +688,23 @@ export default function CodeEditorPage() {
       }
       // Clear all broadcast debounce timers
       Object.values(broadcastDebounceRef.current).forEach(timer => clearTimeout(timer));
+      if (cursorBroadcastStateRef.current.timeout) {
+        clearTimeout(cursorBroadcastStateRef.current.timeout);
+        cursorBroadcastStateRef.current.timeout = null;
+      }
+      if (selectionBroadcastStateRef.current.timeout) {
+        clearTimeout(selectionBroadcastStateRef.current.timeout);
+        selectionBroadcastStateRef.current.timeout = null;
+      }
       Object.values(pendingFileContentRequestsRef.current).forEach((pending) => {
         if (pending?.timeout) {
           clearTimeout(pending.timeout);
         }
       });
       pendingFileContentRequestsRef.current = {};
+      remoteVersionBySourceRef.current = {};
+      latestPeerResponseMetaRef.current = {};
+      remoteCursorMetaRef.current = {};
     };
   }, [roomLink]);
 
@@ -555,20 +718,16 @@ export default function CodeEditorPage() {
       return;
     }
 
-    const roomRow = await supabase
-      .from("rooms")
-      .select("id")
-      .eq("room_link", roomId)
-      .eq("active", true)
-      .maybeSingle();
-
-    if (roomRow.error || !roomRow.data?.id) {
+    let room;
+    try {
+      room = await getActiveRoomRow();
+    } catch {
       showToast('Room is inactive or unavailable.', 'error', 2500);
       window.location.href = "/create-room";
       return;
     }
 
-    const ID = roomRow.data.id;
+    const ID = room.id;
 
     const { data, error } = await supabase
       .from("room_members")
@@ -583,7 +742,9 @@ export default function CodeEditorPage() {
       window.location.href = "/create-room";
       return;
     }
-    console.log(error);
+    if (error) {
+      console.error('Failed to verify room access:', error);
+    }
 
     if (isKickedMember(data.kicked_user)) {
 
@@ -595,7 +756,7 @@ export default function CodeEditorPage() {
       return;
     }
 
-    setUserRole(data.role);
+    setUserRole(normalizeRole(data.role));
     setCurrentUserId(data.user_id);
 
     const userColor = getUserColor(data.user_id);
@@ -626,7 +787,8 @@ export default function CodeEditorPage() {
     }
 
     setCurrentUserName(userName);
-    initializeCollaboration(data.user_id, userName, userColor, token, data.role);
+    initializeCollaboration(data.user_id, userName, userColor, token, normalizeRole(data.role));
+    fetchRoomMembers({ silent: true });
     fetchDownloadPath(data.user_id);
   };
 
@@ -668,6 +830,61 @@ export default function CodeEditorPage() {
     });
   };
 
+  const sendRealtimeBroadcast = (event, payload) => {
+    if (!realtimeChannelRef.current || !currentUserIdRef.current) return false;
+    realtimeChannelRef.current.send({
+      type: 'broadcast',
+      event,
+      payload
+    });
+    return true;
+  };
+
+  const scheduleThrottledBroadcast = (stateRef, event, payload, intervalMs = 80) => {
+    if (!realtimeChannelRef.current || !currentUserIdRef.current) return;
+
+    const state = stateRef.current;
+    state.payload = payload;
+
+    const flush = () => {
+      if (!state.payload) return;
+      sendRealtimeBroadcast(event, state.payload);
+      state.lastSentAt = Date.now();
+      state.payload = null;
+      state.timeout = null;
+    };
+
+    const elapsed = Date.now() - (state.lastSentAt || 0);
+    if (elapsed >= intervalMs && !state.timeout) {
+      flush();
+      return;
+    }
+
+    if (state.timeout) return;
+
+    const waitMs = Math.max(16, intervalMs - elapsed);
+    state.timeout = setTimeout(flush, waitMs);
+  };
+
+  const scheduleFileTreeReload = () => {
+    if (fileTreeReloadTimeoutRef.current) return;
+    fileTreeReloadTimeoutRef.current = setTimeout(() => {
+      fileTreeReloadTimeoutRef.current = null;
+      loadFilesFromServer();
+    }, 220);
+  };
+
+  const getContentBroadcastDelay = (contentValue = '') => {
+    const collaboratorCount = Math.max((connectedUsers?.length || 1) - 1, 0);
+    const baseDelay = 130 + (collaboratorCount * 35);
+    const contentSize = contentValue.length;
+
+    if (contentSize > 20000) return Math.min(720, baseDelay + 260);
+    if (contentSize > 8000) return Math.min(640, baseDelay + 180);
+    if (contentSize > 2000) return Math.min(520, baseDelay + 120);
+    return Math.min(420, baseDelay);
+  };
+
   // Initialize realtime collaboration
   const initializeCollaboration = async (
     userId,
@@ -698,7 +915,7 @@ export default function CodeEditorPage() {
             userName: presence.userName,
             color: presence.color,
             activeFile: presence.activeFile ?? null,
-            role: presence.role ?? 'member',
+            role: normalizeRole(presence.role ?? 'guest'),
             online: true
           });
         });
@@ -712,19 +929,42 @@ export default function CodeEditorPage() {
     });
 
     channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-      // console.log('User left:', leftPresences);
+      const leavingIds = (leftPresences || []).map((presence) => presence?.userId).filter(Boolean);
+      if (leavingIds.length === 0) return;
+
+      setRemoteCursors(prev => {
+        const next = { ...prev };
+        leavingIds.forEach((id) => { delete next[id]; });
+        return next;
+      });
+      setRemoteSelections(prev => {
+        const next = { ...prev };
+        leavingIds.forEach((id) => { delete next[id]; });
+        return next;
+      });
     });
 
     /* -------------------- CURSOR -------------------- */
     channel.on('broadcast', { event: 'cursor' }, ({ payload }) => {
       if (payload.userId !== userId) {
+        const sourceId = payload.sessionId || payload.userId;
+        const sourceKey = `${sourceId}:${payload.fileId || 'unknown'}`;
+        const incomingSentAt = Number.isFinite(payload.sentAt) ? payload.sentAt : Date.now();
+        const lastSeenSentAt = remoteCursorMetaRef.current[sourceKey] || 0;
+        if (incomingSentAt < lastSeenSentAt) {
+          return;
+        }
+        remoteCursorMetaRef.current[sourceKey] = incomingSentAt;
+
         setRemoteCursors(prev => ({
           ...prev,
           [payload.userId]: {
             position: payload.position,
             userName: payload.userName,
             color: payload.color,
-            fileId: payload.fileId
+            fileId: payload.fileId,
+            sessionId: sourceId,
+            sentAt: incomingSentAt
           }
         }));
       }
@@ -733,6 +973,16 @@ export default function CodeEditorPage() {
     /* -------------------- SELECTION -------------------- */
     channel.on('broadcast', { event: 'selection' }, ({ payload }) => {
       if (payload.userId !== userId) {
+        if (!payload.selection) {
+          setRemoteSelections(prev => {
+            if (!prev[payload.userId]) return prev;
+            const next = { ...prev };
+            delete next[payload.userId];
+            return next;
+          });
+          return;
+        }
+
         setRemoteSelections(prev => ({
           ...prev,
           [payload.userId]: {
@@ -748,7 +998,8 @@ export default function CodeEditorPage() {
     channel.on('broadcast', { event: 'content-change' }, ({ payload }) => {
       if (!payload?.fileId || payload.userId === userId) return;
 
-      const sourceKey = `${payload.userId}:${payload.fileId}`;
+      const sourceId = payload.sessionId || payload.userId;
+      const sourceKey = `${sourceId}:${payload.fileId}`;
       const incomingVersion = Number.isFinite(payload.version) ? payload.version : null;
       if (incomingVersion !== null) {
         const lastSeenVersion = remoteVersionBySourceRef.current[sourceKey] || 0;
@@ -772,7 +1023,7 @@ export default function CodeEditorPage() {
       setOpenTabs(prev =>
         prev.map(t =>
           t.id === payload.fileId
-            ? { ...t, content: incomingContent, isDirty: false }
+            ? { ...t, content: incomingContent, isDirty: true }
             : t
         )
       );
@@ -850,6 +1101,7 @@ export default function CodeEditorPage() {
             fileId: payload.fileId,
             content,
             responderId: userId,
+            responderSessionId: collaborationSessionIdRef.current,
             requesterId: payload.requesterId,
             requestId: payload.requestId || null,
             version: localMeta.version || 0,
@@ -865,6 +1117,32 @@ export default function CodeEditorPage() {
       { event: 'file-content-response' },
       ({ payload }) => {
         if (!payload?.fileId || payload.requesterId !== userId) return;
+
+        const responderSourceId = payload.responderSessionId || payload.responderId || 'unknown';
+        const responderKey = `${responderSourceId}:${payload.fileId}`;
+        const incomingVersion = Number.isFinite(payload.version) ? payload.version : null;
+        const incomingSentAt = Number.isFinite(payload.sentAt) ? payload.sentAt : null;
+
+        if (incomingVersion !== null) {
+          const lastSeenVersion = remoteVersionBySourceRef.current[responderKey] || 0;
+          if (incomingVersion <= lastSeenVersion) {
+            return;
+          }
+          remoteVersionBySourceRef.current[responderKey] = incomingVersion;
+        }
+
+        const latestPeerMeta = latestPeerResponseMetaRef.current[payload.fileId];
+        if (
+          incomingSentAt !== null &&
+          latestPeerMeta?.sentAt != null &&
+          incomingSentAt < latestPeerMeta.sentAt
+        ) {
+          return;
+        }
+        latestPeerResponseMetaRef.current[payload.fileId] = {
+          sentAt: incomingSentAt ?? Date.now(),
+          responderId: payload.responderId || null,
+        };
 
         if (payload.requestId) {
           const pending = pendingFileContentRequestsRef.current[payload.requestId];
@@ -886,7 +1164,7 @@ export default function CodeEditorPage() {
         setOpenTabs(prev =>
           prev.map(t =>
             t.id === payload.fileId
-              ? { ...t, content: payload.content, isDirty: false }
+              ? { ...t, content: payload.content, isDirty: true }
               : t
           )
         );
@@ -895,6 +1173,14 @@ export default function CodeEditorPage() {
           activeFileRef.current?.id === payload.fileId &&
           editorRef.current
         ) {
+          const lastLocal = localEditMetaRef.current[payload.fileId];
+          if (
+            lastLocal?.dirty &&
+            incomingSentAt !== null &&
+            incomingSentAt < (lastLocal.updatedAt || 0)
+          ) {
+            return;
+          }
           editorRef.current.setValue(payload.content);
           editorContentRef.current = payload.content;
           setEditorContent(payload.content);
@@ -927,14 +1213,19 @@ export default function CodeEditorPage() {
     ['file-created', 'file-renamed', 'file-deleted'].forEach(event => {
       channel.on('broadcast', { event }, ({ payload }) => {
         if (payload.userId !== userId) {
-          loadFilesFromServer();
+          scheduleFileTreeReload();
         }
       });
     });
 
+    channel.on('broadcast', { event: 'member-updated' }, () => {
+      fetchRoomMembers({ silent: true });
+    });
+
     /* -------------------- KICK -------------------- */
     channel.on('broadcast', { event: 'user-kicked' }, ({ payload }) => {
-      if (payload.userId === userId) {
+      fetchRoomMembers({ silent: true });
+      if (payload?.userId === userId) {
         showToast('You have been removed from this room.', 'error', 2500);
         setTimeout(() => {
           window.location.href = '/create-room';
@@ -977,27 +1268,39 @@ export default function CodeEditorPage() {
     activeFileRef.current = activeFile;
 
     if (realtimeChannelRef.current && currentUserId) {
-      const params = new URLSearchParams(window.location.search);
-      const token = params.get("token");
-      const state = realtimeChannelRef.current.presenceState();
-      const currentPresence = state[token]?.[0];
-
-      if (currentPresence) {
-        realtimeChannelRef.current.track({
-          ...currentPresence,
-          activeFile: activeFile?.id || null
-        });
-      }
+      realtimeChannelRef.current.track({
+        userId: currentUserId,
+        userName: currentUserName,
+        color: currentUserColor,
+        activeFile: activeFile?.id || null,
+        role: normalizeRole(userRole),
+        online_at: new Date().toISOString()
+      });
     }
-  }, [activeFile, currentUserId]);
+  }, [activeFile, currentUserId, currentUserName, currentUserColor, userRole]);
 
   useEffect(() => {
     openTabsRef.current = openTabs;
   }, [openTabs]);
 
   useEffect(() => {
+    currentUserIdRef.current = currentUserId;
+    currentUserNameRef.current = currentUserName;
+    currentUserColorRef.current = currentUserColor;
+  }, [currentUserId, currentUserName, currentUserColor]);
+
+  useEffect(() => {
+    pendingFallbackRunRef.current = pendingFallbackRun;
+  }, [pendingFallbackRun]);
+
+  useEffect(() => {
     allFileContentsRef.current = allFileContents;
   }, [allFileContents]);
+
+  useEffect(() => {
+    if (!showUsersModal && !showSettingsPanel) return;
+    fetchRoomMembers();
+  }, [showUsersModal, showSettingsPanel, roomLink]);
 
   // Auto-scroll chat to bottom
   useEffect(() => {
@@ -1015,6 +1318,28 @@ export default function CodeEditorPage() {
       setHasNewMessage(false);
     }
   }, [bottomPanelMode, showBottomPanel]);
+
+  useEffect(() => {
+    const staleThresholdMs = 15000;
+    const interval = setInterval(() => {
+      const cutoff = Date.now() - staleThresholdMs;
+      setRemoteCursors(prev => {
+        const entries = Object.entries(prev);
+        let changed = false;
+        const next = {};
+        entries.forEach(([userId, data]) => {
+          if ((data?.sentAt || 0) >= cutoff) {
+            next[userId] = data;
+          } else {
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Resizable drawer
   const drawerMinWidth = 220;
@@ -1155,6 +1480,7 @@ export default function CodeEditorPage() {
 
     try {
       let content = '';
+      let receivedPeerOverride = false;
 
       try {
         content = await readEncryptedFile(fileNode.fullPath);
@@ -1178,6 +1504,7 @@ export default function CodeEditorPage() {
       // Always ask peers for freshest content (unsaved changes won't be in storage)
       const freshestPeerContent = await requestFileContentFromPeers(fileNode.id, content);
       if (freshestPeerContent !== content) {
+        receivedPeerOverride = true;
         content = freshestPeerContent;
         allFileContentsRef.current = {
           ...allFileContentsRef.current,
@@ -1191,7 +1518,7 @@ export default function CodeEditorPage() {
 
       if (existingTab) {
         setOpenTabs(prev => prev.map(tab =>
-          tab.id === fileNode.id ? { ...tab, content, isDirty: false } : tab
+          tab.id === fileNode.id ? { ...tab, content, isDirty: receivedPeerOverride } : tab
         ));
 
         if (!openInBackground) {
@@ -1207,7 +1534,9 @@ export default function CodeEditorPage() {
           activeFileRef.current = updatedTab;
           setEditorContent(content);
           editorContentRef.current = content;
-          lastSavedContentRef.current[fileNode.id] = content;
+          if (!receivedPeerOverride) {
+            lastSavedContentRef.current[fileNode.id] = content;
+          }
         }
         return;
       }
@@ -1219,7 +1548,7 @@ export default function CodeEditorPage() {
         repoPath: fileNode.repoPath,
         folderPath: fileNode.folderPath,
         content,
-        isDirty: false,
+        isDirty: receivedPeerOverride,
       };
 
       setOpenTabs(prev => [...prev, newTab]);
@@ -1229,7 +1558,9 @@ export default function CodeEditorPage() {
         activeFileRef.current = newTab;
         setEditorContent(content);
         editorContentRef.current = content;
-        lastSavedContentRef.current[fileNode.id] = content;
+        if (!receivedPeerOverride) {
+          lastSavedContentRef.current[fileNode.id] = content;
+        }
       }
     } catch (err) {
       console.error("Open file failed:", err);
@@ -1298,39 +1629,48 @@ export default function CodeEditorPage() {
       });
 
       const currentFile = activeFileRef.current;
-      if (realtimeChannelRef.current && currentUserId && currentFile) {
-        realtimeChannelRef.current.send({
-          type: 'broadcast',
-          event: 'cursor',
-          payload: {
-            userId: currentUserId,
-            userName: currentUserName,
-            color: currentUserColor,
-            position: position,
-            fileId: currentFile.id
-          }
-        });
+      if (currentFile) {
+        scheduleThrottledBroadcast(
+          cursorBroadcastStateRef,
+          'cursor',
+          {
+            userId: currentUserIdRef.current,
+            userName: currentUserNameRef.current,
+            color: currentUserColorRef.current,
+            position,
+            fileId: currentFile.id,
+            sentAt: Date.now(),
+            sessionId: collaborationSessionIdRef.current
+          },
+          48
+        );
       }
     });
 
     editor.onDidChangeCursorSelection((e) => {
       const currentFile = activeFileRef.current;
-      if (realtimeChannelRef.current && currentUserId && currentFile) {
-        realtimeChannelRef.current.send({
-          type: 'broadcast',
-          event: 'selection',
-          payload: {
-            userId: currentUserId,
-            color: currentUserColor,
-            selection: {
+      if (currentFile) {
+        const isEmptySelection = e.selection.startLineNumber === e.selection.endLineNumber
+          && e.selection.startColumn === e.selection.endColumn;
+
+        scheduleThrottledBroadcast(
+          selectionBroadcastStateRef,
+          'selection',
+          {
+            userId: currentUserIdRef.current,
+            color: currentUserColorRef.current,
+            selection: isEmptySelection ? null : {
               startLineNumber: e.selection.startLineNumber,
               startColumn: e.selection.startColumn,
               endLineNumber: e.selection.endLineNumber,
               endColumn: e.selection.endColumn
             },
-            fileId: currentFile.id
-          }
-        });
+            fileId: currentFile.id,
+            sentAt: Date.now(),
+            sessionId: collaborationSessionIdRef.current
+          },
+          84
+        );
       }
     });
   };
@@ -1505,6 +1845,7 @@ export default function CodeEditorPage() {
     // Broadcast changes with debouncing per file
     if (realtimeChannelRef.current && currentUserId) {
       const fileId = currentFile.id;
+      const debounceMs = getContentBroadcastDelay(nextValue);
 
       // Clear existing timeout for this file
       if (broadcastDebounceRef.current[fileId]) {
@@ -1513,45 +1854,24 @@ export default function CodeEditorPage() {
 
       // Set new timeout
       broadcastDebounceRef.current[fileId] = setTimeout(() => {
-        const editor = editorRef.current;
-        const pos = editor ? editor.getPosition() : null;
-        realtimeChannelRef.current.send({
-          type: 'broadcast',
-          event: 'content-change',
-          payload: {
-            userId: currentUserId,
-            content: nextValue,
-            fileId,
-            version: nextVersion,
-            sentAt: now,
-          }
+        sendRealtimeBroadcast('content-change', {
+          userId: currentUserId,
+          content: nextValue,
+          fileId,
+          version: nextVersion,
+          sentAt: now,
+          sessionId: collaborationSessionIdRef.current
         });
-        if (pos) {
-          realtimeChannelRef.current.send({
-            type: 'broadcast',
-            event: 'cursor',
-            payload: {
-              userId: currentUserId,
-              userName: currentUserName,
-              color: currentUserColor,
-              position: {
-                lineNumber: pos.lineNumber,
-                column: pos.column
-              },
-              fileId: fileId
-            }
-          });
-        }
         delete broadcastDebounceRef.current[fileId];
-      }, 300);
+      }, debounceMs);
     }
   };
 
   // Improved save with verification
-  const handleSaveOffline = async () => saveOffline({
+  const handleSaveOffline = async (options = {}) => saveOffline({
     canEdit,
     openTabs,
-    allFileContents,
+    allFileContents: allFileContentsRef.current,
     lastSavedContentRef,
     updateEncryptedFileReliable,
     updateEncryptedFile,
@@ -1559,7 +1879,9 @@ export default function CodeEditorPage() {
     setOpenTabs,
     lastSavedIdsRef,
     showToast,
-    setIsSaving
+    setIsSaving,
+    saveInProgressRef,
+    ...options
   });
 
   // Push to GitHub function
@@ -1603,30 +1925,10 @@ export default function CodeEditorPage() {
 
   const getRuntimeWsCandidates = () => {
     const candidates = [];
-    const fromEnv = normalizeRuntimeWsUrl(import.meta?.env?.VITE_RUNTIME_WS_URL || '');
-    const defaultCloudRuntime = 'wss://codesync-server-pf6m.onrender.com';
-
-    if (fromEnv) {
-      candidates.push(fromEnv);
+    const hostedRuntime = normalizeRuntimeWsUrl(RUNTIME_SERVER_WS_URL || '');
+    if (hostedRuntime) {
+      candidates.push(hostedRuntime);
     }
-
-    if (typeof window !== 'undefined') {
-      const host = window.location.hostname || 'localhost';
-      const pageProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      // Preferred local runtime port used by runtime-server/server/index.js
-      candidates.push(`${pageProtocol}://${host}:3001`);
-      // Legacy runtime port fallback
-      candidates.push(`${pageProtocol}://${host}:8080`);
-
-      // Desktop/mobile app containers often need explicit localhost candidates.
-      candidates.push('ws://127.0.0.1:3001');
-      candidates.push('ws://localhost:3001');
-    } else {
-      candidates.push('ws://localhost:3001');
-      candidates.push('ws://localhost:8080');
-    }
-
-    candidates.push(defaultCloudRuntime);
 
     // iOS WebView is stricter with insecure mixed-content websocket URLs.
     if (currentPlatform === 'mobile-app' && /iphone|ipad|ipod/i.test(window.navigator.userAgent || '')) {
@@ -1636,7 +1938,7 @@ export default function CodeEditorPage() {
     return [...new Set(candidates)];
   };
 
-  const getRuntimeWsUrl = () => getRuntimeWsCandidates()[0] || 'wss://codesync-server-pf6m.onrender.com';
+  const getRuntimeWsUrl = () => getRuntimeWsCandidates()[0] || normalizeRuntimeWsUrl(RUNTIME_SERVER_WS_URL || '');
 
   const getRuntimeHttpUrl = () => {
     const wsUrl = runtimeSocketRef.current?.url || getRuntimeWsUrl();
@@ -1672,6 +1974,7 @@ export default function CodeEditorPage() {
   const attachRuntimeSocketHandlers = (socket) => {
     socket.onclose = () => {
       runtimeSocketRef.current = null;
+      endRuntimeConnectFeedback();
     };
 
     socket.onmessage = (event) => {
@@ -1716,26 +2019,49 @@ export default function CodeEditorPage() {
           timestamp: new Date()
         }]);
       } else if (msg.type === 'stderr' || msg.type === 'error') {
+        const getJavaClassMismatchHint = (rawError) => {
+          const text = (rawError || '').toString();
+          if (!/cannot find symbol/i.test(text) || !/location:\s+class\s+/i.test(text)) return '';
+          const symbolMatch = text.match(/symbol:\s+class\s+([A-Za-z_]\w*)/i);
+          const locationMatch = text.match(/location:\s+class\s+([A-Za-z_]\w*)/i);
+          if (!symbolMatch?.[1] || !locationMatch?.[1]) return '';
+          const missingClass = symbolMatch[1];
+          const declaredClass = locationMatch[1];
+          if (missingClass === declaredClass) return '';
+          return `Hint: Class "${missingClass}" is not defined in this file. Either rename class "${declaredClass}" to "${missingClass}" or replace "${missingClass}" usages with "${declaredClass}".`;
+        };
+
         setTerminalOutput(prev => [...prev, {
           type: 'error',
           content: msg.data,
           timestamp: new Date()
         }]);
+        const javaHint = getJavaClassMismatchHint(msg.data);
+        if (javaHint) {
+          setTerminalOutput(prev => [...prev, {
+            type: 'system',
+            content: javaHint,
+            timestamp: new Date()
+          }]);
+        }
         if (msg.type === 'error') {
           clearRunTimeout();
+          endRuntimeConnectFeedback();
           setIsRunning(false);
           setIsInteractiveRun(false);
-          if (pendingFallbackRun) {
-            const { payload, runLabel } = pendingFallbackRun;
-            setPendingFallbackRun(null);
+          const pendingFallback = pendingFallbackRunRef.current;
+          if (pendingFallback) {
+            const { payload, runLabel } = pendingFallback;
+            updatePendingFallbackRun(null);
             executeRun(payload, runLabel);
           }
         }
       } else if (msg.type === 'exit') {
         clearRunTimeout();
+        endRuntimeConnectFeedback();
         setIsRunning(false);
         setIsInteractiveRun(false);
-        setPendingFallbackRun(null);
+        updatePendingFallbackRun(null);
         setTerminalOutput(prev => [...prev, {
           type: 'system',
           content: '$ Process completed.',
@@ -1748,12 +2074,14 @@ export default function CodeEditorPage() {
   const connectRuntimeSocketOnce = (url) => new Promise((resolve, reject) => {
     try {
       const socket = new WebSocket(url);
+      const isLocalUrl = /^(ws|wss):\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
+      const connectTimeoutMs = isLocalUrl ? 5000 : 45000;
       const timeout = setTimeout(() => {
         if (socket.readyState === WebSocket.CONNECTING) {
           socket.close();
         }
         reject(new Error(`Runtime server not reachable at ${url}`));
-      }, 5000);
+      }, connectTimeoutMs);
 
       socket.onopen = () => {
         clearTimeout(timeout);
@@ -1781,17 +2109,27 @@ export default function CodeEditorPage() {
       return runtimeConnectPromiseRef.current;
     }
 
+    beginRuntimeConnectFeedback();
     runtimeConnectPromiseRef.current = (async () => {
       const candidates = getRuntimeWsCandidates();
       let lastError = null;
+      const now = Date.now();
+      const cooldownMs = 30000;
 
       for (const candidate of candidates) {
+        const lastFailedAt = runtimeCandidateBackoffRef.current[candidate] || 0;
+        if (lastFailedAt && (now - lastFailedAt) < cooldownMs) {
+          continue;
+        }
+
         try {
           const socket = await connectRuntimeSocketOnce(candidate);
           runtimeSocketRef.current = socket;
+          delete runtimeCandidateBackoffRef.current[candidate];
           return socket;
         } catch (err) {
           lastError = err;
+          runtimeCandidateBackoffRef.current[candidate] = Date.now();
         }
       }
 
@@ -1799,6 +2137,7 @@ export default function CodeEditorPage() {
     })()
       .finally(() => {
         runtimeConnectPromiseRef.current = null;
+        endRuntimeConnectFeedback();
       });
 
     return runtimeConnectPromiseRef.current;
@@ -1840,8 +2179,8 @@ export default function CodeEditorPage() {
         return { name: entry.name, content: activeContent ?? '' };
       }
 
-      if (Object.prototype.hasOwnProperty.call(allFileContents, entry.id)) {
-        return { name: entry.name, content: allFileContents[entry.id] ?? '' };
+      if (Object.prototype.hasOwnProperty.call(allFileContentsRef.current, entry.id)) {
+        return { name: entry.name, content: allFileContentsRef.current[entry.id] ?? '' };
       }
 
       const tab = openTabs.find(t => t.id === entry.id);
@@ -1854,7 +2193,7 @@ export default function CodeEditorPage() {
           const content = await readEncryptedFile(entry.fullPath);
           cacheUpdates[entry.id] = content;
           return { name: entry.name, content: content ?? '' };
-        } catch (err) {
+        } catch {
           readErrors.push(entry.name);
           return { name: entry.name, content: '' };
         }
@@ -1884,6 +2223,36 @@ export default function CodeEditorPage() {
     }
   };
 
+  const clearRuntimeConnectNotice = () => {
+    if (runtimeConnectNoticeTimeoutRef.current) {
+      clearTimeout(runtimeConnectNoticeTimeoutRef.current);
+      runtimeConnectNoticeTimeoutRef.current = null;
+    }
+  };
+
+  const beginRuntimeConnectFeedback = () => {
+    setIsRuntimeConnecting(true);
+    clearRuntimeConnectNotice();
+    runtimeConnectNoticeTimeoutRef.current = setTimeout(() => {
+      setTerminalOutput(prev => [...prev, {
+        type: 'system',
+        content: 'Server is starting (Render free plan cold start). This can take up to ~60 seconds...',
+        timestamp: new Date()
+      }]);
+      runtimeConnectNoticeTimeoutRef.current = null;
+    }, 1200);
+  };
+
+  const endRuntimeConnectFeedback = () => {
+    clearRuntimeConnectNotice();
+    setIsRuntimeConnecting(false);
+  };
+
+  const updatePendingFallbackRun = (nextValue) => {
+    pendingFallbackRunRef.current = nextValue;
+    setPendingFallbackRun(nextValue);
+  };
+
   const killRunningProcess = () => {
     if (runAbortRef.current) {
       runAbortRef.current.abort();
@@ -1893,6 +2262,7 @@ export default function CodeEditorPage() {
       runtimeSocketRef.current.send(JSON.stringify({ type: 'terminate' }));
     }
     clearRunTimeout();
+    endRuntimeConnectFeedback();
     setIsRunning(false);
     setIsInteractiveRun(false);
     setTerminalOutput(prev => [...prev, {
@@ -2016,9 +2386,59 @@ export default function CodeEditorPage() {
         }]);
       }, 30000);
       const basePayload = normalizeCloudRunPayload(payload, runLabel);
+      const runLanguage = (basePayload.language || '').toString().toLowerCase();
+      const judge0LanguageId = JUDGE0_LANGUAGE_IDS[runLanguage] || null;
+      const getJavaClassMismatchHint = (rawError) => {
+        const text = (rawError || '').toString();
+        if (!/cannot find symbol/i.test(text) || !/location:\s+class\s+/i.test(text)) {
+          return '';
+        }
 
-      const runWithPayload = async (requestPayload, allow400Retry = true) => {
-        const response = await fetch('https://emkc.org/api/v2/piston/execute', {
+        const symbolMatch = text.match(/symbol:\s+class\s+([A-Za-z_]\w*)/i);
+        const locationMatch = text.match(/location:\s+class\s+([A-Za-z_]\w*)/i);
+
+        if (!symbolMatch?.[1] || !locationMatch?.[1]) return '';
+
+        const missingClass = symbolMatch[1];
+        const declaredClass = locationMatch[1];
+        if (missingClass === declaredClass) return '';
+
+        return `Hint: Class "${missingClass}" is not defined in this file. Either rename class "${declaredClass}" to "${missingClass}" or replace "${missingClass}" usages with "${declaredClass}".`;
+      };
+      const normalizeJavaSourceForJudge0 = (sourceCode) => {
+        const raw = typeof sourceCode === 'string' ? sourceCode : '';
+        const match = raw.match(/\bpublic\s+class\s+([A-Za-z_]\w*)\b/);
+        if (!match) {
+          return { source: raw, renamed: false, originalClass: '' };
+        }
+
+        const originalClass = match[1];
+        if (originalClass === 'Main') {
+          return { source: raw, renamed: false, originalClass };
+        }
+
+        const classDeclRegex = /\bpublic\s+class\s+([A-Za-z_]\w*)\b/;
+        let source = raw.replace(classDeclRegex, 'public class Main');
+
+        // Keep entry-point method name `main` untouched; only adjust constructor/type usage.
+        const newExprRegex = new RegExp(`\\bnew\\s+${originalClass}\\s*\\(`, 'g');
+        source = source.replace(newExprRegex, 'new Main(');
+
+        const typedVarRegex = new RegExp(`\\b${originalClass}(\\s+[A-Za-z_]\\w*\\s*[=;,])`, 'g');
+        source = source.replace(typedVarRegex, 'Main$1');
+
+        const constructorDeclRegex = new RegExp(`\\b(public|protected|private)\\s+${originalClass}\\s*\\(`, 'g');
+        source = source.replace(constructorDeclRegex, '$1 Main(');
+
+        return {
+          source,
+          renamed: true,
+          originalClass,
+        };
+      };
+
+      const runWithCustomCloud = async (requestPayload, cloudRunUrl, allow400Retry = true) => {
+        const response = await fetch(cloudRunUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2042,47 +2462,226 @@ export default function CodeEditorPage() {
               content: 'Cloud runner rejected multi-file request (400). Retrying with active file only...',
               timestamp: new Date()
             }]);
-            return runWithPayload(singleFileCloudPayload(requestPayload, runLabel), false);
+            return runWithCustomCloud(singleFileCloudPayload(requestPayload, runLabel), cloudRunUrl, false);
           }
+
+          if (response.status === 401 && /whitelist/i.test(detail)) {
+            throw new Error('Cloud runner denied request (401). Public Piston became whitelist-only on February 15, 2026. Use Local mode or configure VITE_CLOUD_RUN_URL.');
+          }
+
           const detailSuffix = detail ? ` - ${detail}` : '';
           throw new Error(`HTTP error! status: ${response.status}${detailSuffix}`);
         }
 
-        return response.json();
-      };
+        const result = await response.json();
 
-      const result = await runWithPayload(basePayload, true);
+        if (result.run) {
+          if (result.run.stdout) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'output',
+              content: result.run.stdout,
+              timestamp: new Date()
+            }]);
+          }
 
-      if (result.run) {
-        if (result.run.stdout) {
-          setTerminalOutput(prev => [...prev, {
-            type: 'output',
-            content: result.run.stdout,
-            timestamp: new Date()
-          }]);
-        }
+          if (result.run.stderr) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'error',
+              content: result.run.stderr,
+              timestamp: new Date()
+            }]);
+          }
 
-        if (result.run.stderr) {
+          if (!result.run.stdout && !result.run.stderr) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'system',
+              content: 'Program executed successfully with no output.',
+              timestamp: new Date()
+            }]);
+          }
+        } else if (result.compile && result.compile.stderr) {
+          const javaHint = runLanguage === 'java'
+            ? getJavaClassMismatchHint(result.compile.stderr)
+            : '';
           setTerminalOutput(prev => [...prev, {
             type: 'error',
-            content: result.run.stderr,
+            content: `Compilation Error:\n${result.compile.stderr}`,
+            timestamp: new Date()
+          }, ...(javaHint ? [{
+            type: 'system',
+            content: javaHint,
+            timestamp: new Date()
+          }] : [])]);
+        }
+      };
+
+      const runWithFreeJudge0 = async (requestPayload) => {
+        if (!judge0LanguageId) {
+          throw new Error(`Free API fallback does not support language: ${runLanguage}`);
+        }
+
+        const freeCloudUrl = getFreeCloudExecuteUrl();
+        if (!freeCloudUrl) {
+          throw new Error('Free cloud API URL is not configured.');
+        }
+
+        if (requestPayload.files.length > 1) {
+          setTerminalOutput(prev => [...prev, {
+            type: 'system',
+            content: 'Free API supports single-file mode. Running active file only...',
             timestamp: new Date()
           }]);
         }
 
-        if (!result.run.stdout && !result.run.stderr) {
+        let sourceCode = (requestPayload.files[0]?.content || '');
+        if (runLanguage === 'java') {
+          const normalizedJava = normalizeJavaSourceForJudge0(sourceCode);
+          sourceCode = normalizedJava.source;
+
+          if (normalizedJava.renamed) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'system',
+              content: `Free API Java mode requires class Main. Renamed public class ${normalizedJava.originalClass} to Main for execution.`,
+              timestamp: new Date()
+            }]);
+          }
+        }
+
+        const requestBody = {
+          language_id: judge0LanguageId,
+          source_code: sourceCode,
+          stdin: requestPayload.stdin || ''
+        };
+
+        const response = await fetch(freeCloudUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        if (!response) {
+          throw new Error('No response from free runtime service');
+        }
+
+        if (!response.ok) {
+          const detail = await readRuntimeHttpError(response);
+          const detailSuffix = detail ? ` - ${detail}` : '';
+          throw new Error(`Free API error! status: ${response.status}${detailSuffix}`);
+        }
+
+        const result = await response.json();
+
+        if (result.compile_output) {
+          const javaHint = runLanguage === 'java'
+            ? getJavaClassMismatchHint(result.compile_output)
+            : '';
+          setTerminalOutput(prev => [...prev, {
+            type: 'error',
+            content: `Compilation Error:\n${result.compile_output}`,
+            timestamp: new Date()
+          }, ...(javaHint ? [{
+            type: 'system',
+            content: javaHint,
+            timestamp: new Date()
+          }] : [])]);
+        }
+
+        if (result.stdout) {
+          setTerminalOutput(prev => [...prev, {
+            type: 'output',
+            content: result.stdout,
+            timestamp: new Date()
+          }]);
+        }
+
+        if (result.stderr) {
+          const javaHint = runLanguage === 'java'
+            ? getJavaClassMismatchHint(result.stderr)
+            : '';
+          setTerminalOutput(prev => [...prev, {
+            type: 'error',
+            content: result.stderr,
+            timestamp: new Date()
+          }, ...(javaHint ? [{
+            type: 'system',
+            content: javaHint,
+            timestamp: new Date()
+          }] : [])]);
+        }
+
+        if (result.message) {
+          setTerminalOutput(prev => [...prev, {
+            type: 'error',
+            content: result.message,
+            timestamp: new Date()
+          }]);
+        }
+
+        if (!result.stdout && !result.stderr && !result.compile_output && !result.message) {
           setTerminalOutput(prev => [...prev, {
             type: 'system',
             content: 'Program executed successfully with no output.',
             timestamp: new Date()
           }]);
         }
-      } else if (result.compile && result.compile.stderr) {
-        setTerminalOutput(prev => [...prev, {
-          type: 'error',
-          content: `Compilation Error:\n${result.compile.stderr}`,
-          timestamp: new Date()
-        }]);
+      };
+
+      const cloudRunUrl = getCloudRunExecuteUrl();
+      const providers = [];
+
+      if (cloudRunUrl) {
+        providers.push({
+          id: 'custom',
+          label: 'Cloud runner',
+          run: () => runWithCustomCloud(basePayload, cloudRunUrl, true)
+        });
+      }
+
+      if (judge0LanguageId) {
+        providers.push({
+          id: 'free',
+          label: 'Free API',
+          run: () => runWithFreeJudge0(singleFileCloudPayload(basePayload, runLabel))
+        });
+      }
+
+      if (providers.length === 0) {
+        throw new Error('No cloud provider available for this language. Configure VITE_CLOUD_RUN_URL or use Server runtime.');
+      }
+
+      let executed = false;
+      let lastError = null;
+
+      for (let i = 0; i < providers.length; i += 1) {
+        const provider = providers[i];
+        try {
+          await provider.run();
+          executed = true;
+          if (i > 0) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'system',
+              content: `Execution succeeded using ${provider.label}.`,
+              timestamp: new Date()
+            }]);
+          }
+          break;
+        } catch (providerError) {
+          lastError = providerError;
+          if (i < providers.length - 1) {
+            setTerminalOutput(prev => [...prev, {
+              type: 'system',
+              content: `${provider.label} failed. Trying next provider...`,
+              timestamp: new Date()
+            }]);
+          }
+        }
+      }
+
+      if (!executed) {
+        throw lastError || new Error('Execution failed on all cloud providers');
       }
 
       setTerminalInput('');
@@ -2098,6 +2697,7 @@ export default function CodeEditorPage() {
       }]);
     } finally {
       clearRunTimeout();
+      endRuntimeConnectFeedback();
       runAbortRef.current = null;
       setIsRunning(false);
       setTerminalOutput(prev => [...prev, {
@@ -2117,7 +2717,7 @@ export default function CodeEditorPage() {
     executeRun({ ...payload, stdin: stdinValue }, runLabel);
   };
 
-  // Run code using Piston API
+  // Run code using local runtime or configured cloud runner
   const handleRunCode = async () => {
     if (!canEdit) {
       showToast('You are in guest mode. Run and edit are disabled.', 'error', 2500);
@@ -2130,12 +2730,12 @@ export default function CodeEditorPage() {
       return;
     }
 
-    setPendingFallbackRun(null);
+    updatePendingFallbackRun(null);
     setIsInteractiveRun(false);
 
     const activeContent = currentActiveFile.id === activeFile?.id
       ? editorContentRef.current
-      : (allFileContents[currentActiveFile.id] || currentActiveFile.content || '');
+      : (allFileContentsRef.current[currentActiveFile.id] || currentActiveFile.content || '');
 
     const { files, activePath } = await collectProjectFiles(currentActiveFile.id, activeContent);
 
@@ -2158,7 +2758,7 @@ export default function CodeEditorPage() {
 
       try {
         await requestHtmlPreview(files, activePath || currentActiveFile.name);
-      } catch (err) {
+      } catch {
         const blob = new Blob([mainFileContent || ''], { type: 'text/html' });
         const url = URL.createObjectURL(blob);
         htmlPreviewUrlRef.current = url;
@@ -2194,7 +2794,6 @@ export default function CodeEditorPage() {
       ruby: /\b(gets|STDIN)\b/
     };
     const needsInput = inputMatchers[language]?.test(mainFileContent) || false;
-    const isModuleJs = language === 'javascript' && /\b(import\s+|export\s+)/.test(mainFileContent);
 
     const payload = {
       language: language,
@@ -2214,25 +2813,66 @@ export default function CodeEditorPage() {
       java: 'java',
       c: 'c',
       'c++': 'cpp',
+      ruby: 'ruby',
       prolog: 'prolog',
-      ruby: 'ruby'
+      bash: 'bash',
+      php: 'php',
+      go: 'go',
+      rust: 'rust',
+      csharp: 'csharp',
+      kotlin: 'kotlin',
+      lua: 'lua',
+      perl: 'perl',
     };
 
+    const hasCustomCloudRunner = !!getCloudRunExecuteUrl();
+    const hasFreeApiFallback = !!JUDGE0_LANGUAGE_IDS[language];
+    const cloudRunConfigured = hasCustomCloudRunner || hasFreeApiFallback;
+    const canRunLocally = !!localLanguageMap[language];
+
     const shouldUseLocal =
-      runMode === 'local' ||
-      (runMode === 'auto' && needsInput) ||
-      (runMode === 'auto' && isModuleJs) ||
-      (runMode === 'auto' && language === 'java');
+      canRunLocally && (runMode !== 'api');
+
+    if (runMode === 'local' && !canRunLocally) {
+      setBottomPanelMode('terminal');
+      setShowBottomPanel(true);
+      setTerminalOutput(prev => [...prev, {
+        type: 'error',
+        content: `Local runtime does not support ${language}.`,
+        timestamp: new Date()
+      }]);
+      return;
+    }
+
+    if (runMode === 'api' && !cloudRunConfigured) {
+      setBottomPanelMode('terminal');
+      setShowBottomPanel(true);
+      setTerminalOutput(prev => [...prev, {
+        type: 'error',
+        content: `No cloud provider is available for ${language}. Configure VITE_CLOUD_RUN_URL or switch to Local mode.`,
+        timestamp: new Date()
+      }]);
+      return;
+    }
 
     if (shouldUseLocal && localLanguageMap[language]) {
       try {
-        const socket = await connectRuntimeSocket();
-        setPendingRunRequest(null);
-        setPendingFallbackRun({ payload, runLabel: currentActiveFile.name });
-        setIsInteractiveRun(true);
-        setIsRunning(true);
         setBottomPanelMode('terminal');
         setShowBottomPanel(true);
+        setTerminalOutput(prev => [...prev, {
+          type: 'system',
+          content: '$ Connecting to server runtime...',
+          timestamp: new Date()
+        }]);
+        const socket = await connectRuntimeSocket();
+        setPendingRunRequest(null);
+        updatePendingFallbackRun(
+          runMode === 'local' || !cloudRunConfigured
+            ? null
+            : { payload, runLabel: currentActiveFile.name }
+        );
+        setIsInteractiveRun(true);
+        setIsRunning(true);
         setTerminalOutput(prev => [...prev, {
           type: 'system',
           content: `$ Running ${currentActiveFile.name} (Server runtime)...`,
@@ -2259,19 +2899,23 @@ export default function CodeEditorPage() {
             main: runtimeMainFile
           }));
           return;
-        } catch (err) {
+        } catch {
         if (!runtimeUnavailableNotified) {
           setRuntimeUnavailableNotified(true);
           setTerminalOutput(prev => [...prev, {
             type: 'system',
-            content: 'Server runtime not available. Falling back to cloud runner.',
+            content: cloudRunConfigured
+              ? (hasCustomCloudRunner ? 'Server runtime not available. Falling back to cloud runner.' : 'Server runtime not available. Falling back to free API.')
+              : 'Server runtime not available.',
             timestamp: new Date()
           }]);
         }
-        if (runMode === 'local') {
+        if (runMode === 'local' || !cloudRunConfigured) {
           setTerminalOutput(prev => [...prev, {
             type: 'error',
-            content: 'Server runtime is required in this mode, but it is not reachable.',
+            content: cloudRunConfigured
+              ? 'Server runtime is required in this mode, but it is not reachable.'
+              : `No cloud provider is available for ${language}. Start runtime server on port 3001 or set VITE_CLOUD_RUN_URL.`,
             timestamp: new Date()
           }]);
           return;
@@ -2520,129 +3164,197 @@ export default function CodeEditorPage() {
     editor.focus();
   };
 
-  const handleKickUser = async (userId) => {
-    if (!isOwner) return;
+  const notifyMemberUpdated = (payload = {}) => {
+    if (!realtimeChannelRef.current) return;
+    realtimeChannelRef.current.send({
+      type: 'broadcast',
+      event: 'member-updated',
+      payload: {
+        ...payload,
+        updatedBy: currentUserId,
+        roomId: roomLink,
+        at: new Date().toISOString(),
+      },
+    });
+  };
+
+  const updateMemberRole = async (targetUserId, nextRole, successMessage) => {
+    const normalizedRole = normalizeRole(nextRole);
+    const dbRole = toDbRole(nextRole);
+    if (!targetUserId) return false;
 
     try {
-      const roomRow = await supabase
-        .from("rooms")
-        .select("id")
-        .eq("room_link", roomLink)
-        .eq("active", true)
-        .maybeSingle();
+      const room = await getActiveRoomRow();
+      const { error } = await supabase
+        .from("room_members")
+        .update({ role: dbRole })
+        .eq("room_id", room.id)
+        .eq("user_id", targetUserId);
 
-      if (roomRow.error || !roomRow.data?.id) {
-        throw new Error("Room is inactive or unavailable");
-      }
-      const roomId = roomRow.data.id;
+      if (error) throw error;
 
+      setConnectedUsers(prev =>
+        prev.map((member) =>
+          member.userId === targetUserId ? { ...member, role: normalizedRole } : member
+        )
+      );
+      setRoomMembers(prev =>
+        prev.map((member) =>
+          member.userId === targetUserId
+            ? { ...member, role: normalizedRole, kicked: false, kickedData: null }
+            : member
+        )
+      );
+      notifyMemberUpdated({ userId: targetUserId, role: normalizedRole });
+      fetchRoomMembers({ silent: true });
+      showToast(successMessage, 'success', 2000);
+      return true;
+    } catch (err) {
+      console.error('Failed to update role:', normalizedRole,);
+      showToast(`Failed to update role: ${err.message}`, 'error', 2500);
+      return false;
+    }
+  };
+
+  const handleKickUser = async (targetUserId) => {
+    const target = roomMembers.find((member) => member.userId === targetUserId);
+    const targetRole = normalizeRole(target?.role);
+    const actingAsAdmin = !isOwner && normalizeRole(userRole) === 'admin';
+    const canKickAsOwner = isOwner && targetUserId !== currentUserId && targetRole !== 'owner';
+    const canKickAsAdmin = actingAsAdmin && targetRole !== 'owner' && targetRole !== 'admin';
+
+    if (!canKickAsOwner && !canKickAsAdmin) {
+      showToast('You do not have permission to remove this user.', 'error', 2000);
+      return;
+    }
+
+    try {
+      const room = await getActiveRoomRow();
       const kickedPayload = {
         kicked_user: {
           kicked: true,
           kicker_user: true,
           kicker_id: currentUserId || roomOwnerId || null,
-          kicked_at: new Date().toISOString()
+          kicker_role: isOwner ? 'owner' : 'admin',
+          kicked_at: new Date().toISOString(),
         },
       };
 
       let { error } = await supabase
         .from('room_members')
         .update(kickedPayload)
-        .eq('room_id', roomId)
-        .eq('user_id', userId);
+        .eq('room_id', room.id)
+        .eq('user_id', targetUserId);
 
       if (error) {
         const fallback = await supabase
           .from('room_members')
           .update({ kicked_user: true })
-          .eq('room_id', roomId)
-          .eq('user_id', userId);
+          .eq('room_id', room.id)
+          .eq('user_id', targetUserId);
         error = fallback.error;
       }
+      if (error) throw error;
 
-      if (error) {
-        console.error('Kick user database error:', error);
-        throw error;
-      }
-
-      // Broadcast kick event
       if (realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
           type: 'broadcast',
           event: 'user-kicked',
-          payload: { userId }
+          payload: { userId: targetUserId }
         });
       }
 
-      // Remove from connected users list
-      setConnectedUsers(prev => prev.filter(u => u.userId !== userId));
-      showToast('User has been removed from the room.', 'success', 2500);
-
+      setConnectedUsers(prev => prev.filter(member => member.userId !== targetUserId));
+      setRoomMembers(prev =>
+        prev.map((member) =>
+          member.userId === targetUserId
+            ? { ...member, kicked: true, kickedData: kickedPayload.kicked_user }
+            : member
+        )
+      );
+      notifyMemberUpdated({ userId: targetUserId, kicked: true });
+      fetchRoomMembers({ silent: true });
+      showToast('User has been removed from the room.', 'success', 2000);
     } catch (err) {
       console.error('Failed to kick user:', err);
       showToast(`Failed to remove user: ${err.message}`, 'error', 2500);
     }
   };
 
-  const handleMakeAdmin = async (targetUserId) => {
+  const handlePromoteToEditor = async (targetUserId) => {
+    const target = roomMembers.find((member) => member.userId === targetUserId);
+    if (!target) return;
+
+    const targetRole = normalizeRole(target.role);
+    const actingAsAdmin = !isOwner && normalizeRole(userRole) === 'admin';
+    const canPromoteAsOwner = isOwner && targetRole === 'guest';
+    const canPromoteAsAdmin = actingAsAdmin && targetRole === 'guest';
+
+    if (!canPromoteAsOwner && !canPromoteAsAdmin) {
+      showToast('You can only promote guest users to editor.', 'error', 2000);
+      return;
+    }
+
+    await updateMemberRole(targetUserId, 'editor', 'User promoted to editor.');
+  };
+
+  const handlePromoteToAdmin = async (targetUserId) => {
+    if (!isOwner) return;
+    const target = roomMembers.find((member) => member.userId === targetUserId);
+    if (!target) return;
+    const targetRole = normalizeRole(target.role);
+    if (targetRole === 'owner' || targetRole === 'admin') {
+      showToast('Selected user already has elevated access.', 'error', 2000);
+      return;
+    }
+
+    await updateMemberRole(targetUserId, 'admin', 'User promoted to admin.');
+  };
+
+  const handleDemoteToGuest = async (targetUserId) => {
+    if (!isOwner) return;
+    const target = roomMembers.find((member) => member.userId === targetUserId);
+    if (!target) return;
+    const targetRole = normalizeRole(target.role);
+    if (targetRole === 'owner' || targetRole === 'guest') {
+      showToast('Selected user cannot be demoted.', 'error', 2000);
+      return;
+    }
+
+    await updateMemberRole(targetUserId, 'guest', 'User demoted to guest.');
+  };
+
+  const handleUnkickUser = async (targetUserId) => {
     if (!isOwner) return;
 
     try {
-      //]]\
-      const { data: roomData, error: roomError } = await supabase
-        .from("rooms")
-        .select("id")
-        .eq("room_link", roomLink)
-        .eq("active", true)
-        .single();
+      const room = await getActiveRoomRow();
+      const { error } = await supabase
+        .from('room_members')
+        .update({
+          kicked_user: null,
+          role: 'guest',
+        })
+        .eq('room_id', room.id)
+        .eq('user_id', targetUserId);
 
-      if (roomError || !roomData) {
-        throw new Error("Room not found or access denied");
-      }
+      if (error) throw error;
 
-      const roomId = roomData.id;
-
-      // 2️⃣ Update role → admin
-      const { error: updateError } = await supabase
-        .from("room_members")
-        .update({ role: "admin" })
-        .eq("room_id", roomId)
-        .eq("user_id", targetUserId);
-
-      if (updateError) {
-        throw updateError;
-      }
-
-      // 3️⃣ Verify (optional but good for debugging)
-      const { data: verifyData, error: verifyError } = await supabase
-        .from("room_members")
-        .select("role")
-        .eq("room_id", roomId)
-        .eq("user_id", targetUserId)
-        .single();
-
-      if (verifyError || verifyData?.role !== "admin") {
-        throw new Error("Failed to verify admin promotion");
-      }
-
-      // 4️⃣ Update local state
-      setConnectedUsers(prev =>
-        prev.map(u =>
-          u.userId === targetUserId ? { ...u, role: "admin" } : u
+      setRoomMembers(prev =>
+        prev.map((member) =>
+          member.userId === targetUserId
+            ? { ...member, kicked: false, kickedData: null, role: 'guest' }
+            : member
         )
       );
-
-      showToast("User has been promoted to admin successfully.", 'success', 2500);
-
-      // 5️⃣ Reload files
-      await loadFilesFromServer();
-
+      notifyMemberUpdated({ userId: targetUserId, kicked: false, role: 'guest' });
+      fetchRoomMembers({ silent: true });
+      showToast('User has been allowed back as guest.', 'success', 2200);
     } catch (err) {
-      console.error("Failed to make admin:", err);
-      showToast(`Failed to promote user: ${err.message || 'Unknown error'}`, 'error', 2500);
+      console.error('Failed to unkick user:', err);
+      showToast(`Failed to unkick user: ${err.message}`, 'error', 2500);
     }
   };
-
 
   const handleChangePassword = async (newPassword) => {
     if (!isOwner) return;
@@ -2664,7 +3376,7 @@ export default function CodeEditorPage() {
   };
 
   const handleUpdateRoomName = async () => {
-    if (!isOwner) return;
+    if (!isOwner && !isAdmin) return;
     const trimmed = roomName.trim();
     if (!trimmed) {
       showToast('Room name cannot be empty.', 'error', 2500);
@@ -2726,9 +3438,10 @@ export default function CodeEditorPage() {
 
   const handleDownloadProjectZip = async () => handleDownloadProjectZipExternal(getDownloadCtx());
 
-  const isOwner = userRole === 'owner' || currentUserId === roomOwnerId;
-  const isAdmin = userRole === 'admin' || isOwner;
-  const canEdit = isOwner || userRole === 'editor' || userRole === 'admin';
+  const normalizedUserRole = normalizeRole(userRole);
+  const isOwner = normalizedUserRole === 'owner' || currentUserId === roomOwnerId;
+  const isAdmin = isOwner || normalizedUserRole === 'admin';
+  const canEdit = isOwner || normalizedUserRole === 'editor' || normalizedUserRole === 'admin';
   const canPushToGitHub = isOwner;
   const activeExtension = activeFile?.name?.split('.').pop()?.toLowerCase();
   const canRunActive = !!activeFile && (LANGUAGE_MAP[activeExtension] || activeExtension === 'html' || activeExtension === 'htm');
@@ -2743,9 +3456,77 @@ export default function CodeEditorPage() {
     return Array.from(map.values());
   }, [connectedUsers]);
 
-  const onlineCount = (uniqueConnectedUsers.length || users.filter(u => u.online).length);
+  const roomMemberMap = React.useMemo(() => {
+    const map = new Map();
+    roomMembers.forEach((member) => {
+      if (member?.userId) {
+        map.set(member.userId, member);
+      }
+    });
+    return map;
+  }, [roomMembers]);
+
+  const visibleConnectedUsers = React.useMemo(() => {
+    return uniqueConnectedUsers
+      .map((user) => {
+        const member = roomMemberMap.get(user.userId);
+        const role = normalizeRole(member?.role ?? user.role);
+        const kicked = member ? !!member.kicked : false;
+        return {
+          ...user,
+          userName: member?.userName || user.userName,
+          role,
+          kicked,
+        };
+      })
+      .filter((user) => !user.kicked);
+  }, [uniqueConnectedUsers, roomMemberMap]);
+
+  const activeRoomMembers = React.useMemo(() => {
+    return roomMembers
+      .filter((member) => !member.kicked)
+      .sort((a, b) => {
+        const rankDiff = (ROLE_RANK[a.role] ?? 99) - (ROLE_RANK[b.role] ?? 99);
+        if (rankDiff !== 0) return rankDiff;
+        return a.userName.localeCompare(b.userName);
+      });
+  }, [roomMembers]);
+
+  const kickedRoomMembers = React.useMemo(() => {
+    return roomMembers
+      .filter((member) => member.kicked)
+      .sort((a, b) => (b.joinedAt || '').localeCompare(a.joinedAt || ''));
+  }, [roomMembers]);
+
+  const canKickMember = (member) => {
+    if (!member || member.userId === currentUserId) return false;
+    const role = normalizeRole(member.role);
+    if (isOwner) return role !== 'owner';
+    return normalizedUserRole === 'admin' && (role === 'guest' || role === 'editor');
+  };
+
+  const canPromoteMemberToEditor = (member) => {
+    if (!member || member.userId === currentUserId) return false;
+    const role = normalizeRole(member.role);
+    return role === 'guest' && (isOwner || normalizedUserRole === 'admin');
+  };
+
+  const canPromoteMemberToAdmin = (member) => {
+    if (!member || member.userId === currentUserId) return false;
+    const role = normalizeRole(member.role);
+    return isOwner && role !== 'owner' && role !== 'admin';
+  };
+
+  const canDemoteMemberToGuest = (member) => {
+    if (!member || member.userId === currentUserId) return false;
+    const role = normalizeRole(member.role);
+    return isOwner && role !== 'owner' && role !== 'guest';
+  };
+
+  const onlineCount = (visibleConnectedUsers.length || users.filter(u => u.online).length);
   const dirtyCount = openTabs.filter(t => t.isDirty).length;
   const showActionButtons = dirtyCount === 0;
+  const isRunBusy = isRunning || isRuntimeConnecting;
   const handleExitEditor = () => {
     if (dirtyCount > 0) {
       const shouldExit = window.confirm(`You have ${dirtyCount} unsaved file(s). Exit anyway?`);
@@ -2772,7 +3553,7 @@ export default function CodeEditorPage() {
     });
   };
 
-  const usersInCurrentFile = uniqueConnectedUsers.filter(
+  const usersInCurrentFile = visibleConnectedUsers.filter(
     user => user.activeFile === activeFile?.id && user.userId !== currentUserId
   );
 
@@ -2934,12 +3715,12 @@ export default function CodeEditorPage() {
                   onKeyDown={(e) => e.key === 'Enter' && handleUpdateRoomName()}
                   className="bg-slate-800/60 border border-slate-600 rounded-lg px-3 py-1.5 text-sm font-medium focus:outline-none focus:border-emerald-500/50 transition-all"
                   autoFocus
-                  disabled={!isOwner}
+                  disabled={!isAdmin}
                 />
               ) : (
                 <h1 className="text-sm font-semibold text-slate-200 truncate">
                   {roomName}
-                  {isOwner && (
+                  {isAdmin && (
                     <button
                       onClick={() => setIsEditingRoomName(true)}
                       className="ml-1.5 text-slate-500 hover:text-slate-300 transition-colors inline-flex"
@@ -3040,18 +3821,17 @@ export default function CodeEditorPage() {
               {canRunActive && (
                 <button
                   onClick={handleRunCode}
-                  disabled={!canEdit || isRunning || !activeFile}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${canEdit && !isRunning && activeFile
+                  disabled={!canEdit || isRunBusy || !activeFile}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all modern-button ${canEdit && !isRunBusy && activeFile
                     ? 'primary-button text-white'
                     : 'bg-slate-700/50 text-slate-500 cursor-not-allowed opacity-60'
                     }`}
-                  title="Run Code"
+                  title={isRuntimeConnecting ? 'Starting server runtime...' : 'Run Code'}
                 >
-                  {isRunning ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Play className="w-4 h-4" />
-                  )}
+                  {isRunBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  <span className="hidden sm:inline text-xs font-semibold">
+                    {isRuntimeConnecting ? 'Starting server...' : (isRunning ? 'Running...' : 'Run')}
+                  </span>
                 </button>
               )}
             </div>
@@ -3324,7 +4104,7 @@ export default function CodeEditorPage() {
               )}
               {currentUserName && (
                 <span className="px-2 py-0.5 rounded font-medium flex-shrink-0" style={{ backgroundColor: `${currentUserColor}20`, color: currentUserColor, border: `1px solid ${currentUserColor}40` }}>
-                  {currentUserName}
+                  {formatUserNameForDisplay(currentUserName, currentUserId, currentUserId)}
                 </span>
               )}
               {!canEdit && (
@@ -3403,7 +4183,7 @@ export default function CodeEditorPage() {
                             onClick={() => setRunMode('auto')}
                             className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${runMode === 'auto' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-slate-200'
                               }`}
-                            title="Auto: Local only when input or ES module is detected"
+                            title="Auto: Prefer local runtime for supported languages"
                           >
                             Auto
                           </button>
@@ -3419,9 +4199,9 @@ export default function CodeEditorPage() {
                             onClick={() => setRunMode('api')}
                             className={`px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] rounded-md transition-all modern-button ${runMode === 'api' ? 'bg-purple-500/20 text-purple-300' : 'text-slate-400 hover:text-slate-200'
                               }`}
-                            title="Force cloud runner"
+                            title="Force cloud runner (custom endpoint, then free API fallback)"
                           >
-                            API
+                            Cloud
                           </button>
                         </div>
                         <button
@@ -3624,7 +4404,7 @@ export default function CodeEditorPage() {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-bold flex items-center gap-2">
                   <Users className="w-5 h-5 text-emerald-500" />
-                  Connected Users ({connectedUsers.length})
+                  Connected Users ({visibleConnectedUsers.length})
                 </h2>
                 <button
                   onClick={() => setShowUsersModal(false)}
@@ -3635,7 +4415,7 @@ export default function CodeEditorPage() {
               </div>
 
               <div className="space-y-2 overflow-y-auto flex-1">
-                {connectedUsers.map((user) => (
+                {visibleConnectedUsers.map((user) => (
                   <div
                     key={user.userId}
                     className="glass rounded-lg p-3 flex items-center justify-between gap-3"
@@ -3649,7 +4429,9 @@ export default function CodeEditorPage() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium truncate">{user.userName}</span>
+                          <span className="font-medium truncate">
+                            {formatUserNameForDisplay(user.userName, user.userId, currentUserId)}
+                          </span>
                           {user.userId === roomOwnerId && (
                             <Crown className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" title="Owner" />
                           )}
@@ -3660,28 +4442,51 @@ export default function CodeEditorPage() {
                         <span className="text-xs text-slate-500 capitalize">{user.role}</span>
                       </div>
                     </div>
-                    {isOwner && user.userId !== currentUserId && user.userId !== roomOwnerId && (
+                    {(canPromoteMemberToEditor(user) || canPromoteMemberToAdmin(user) || canDemoteMemberToGuest(user) || canKickMember(user)) && (
                       <div className="flex items-center gap-1 flex-shrink-0">
-                        {user.role !== 'admin' && (
+                        {canPromoteMemberToEditor(user) && (
                           <button
-                            onClick={() => handleMakeAdmin(user.userId)}
+                            onClick={() => handlePromoteToEditor(user.userId)}
                             className="p-1.5 hover:bg-blue-500/20 text-blue-400 rounded transition-all modern-button"
-                            title="Make Admin"
+                            title="Promote to Editor"
                           >
                             <UserPlus className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        <button
-                          onClick={() => handleKickUser(user.userId)}
-                          className="p-1.5 hover:bg-red-500/20 text-red-400 rounded transition-all modern-button"
-                          title="Remove User"
-                        >
-                          <UserX className="w-3.5 h-3.5" />
-                        </button>
+                        {canPromoteMemberToAdmin(user) && (
+                          <button
+                            onClick={() => handlePromoteToAdmin(user.userId)}
+                            className="p-1.5 hover:bg-indigo-500/20 text-indigo-400 rounded transition-all modern-button"
+                            title="Promote to Admin"
+                          >
+                            <Shield className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {canDemoteMemberToGuest(user) && (
+                          <button
+                            onClick={() => handleDemoteToGuest(user.userId)}
+                            className="p-1.5 hover:bg-amber-500/20 text-amber-300 rounded transition-all modern-button"
+                            title="Demote to Guest"
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {canKickMember(user) && (
+                          <button
+                            onClick={() => handleKickUser(user.userId)}
+                            className="p-1.5 hover:bg-red-500/20 text-red-400 rounded transition-all modern-button"
+                            title="Remove User"
+                          >
+                            <UserX className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
                 ))}
+                {isLoadingRoomMembers && (
+                  <div className="text-center text-xs text-slate-500 py-3">Refreshing members...</div>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -3733,7 +4538,9 @@ export default function CodeEditorPage() {
                     </div>
                     <div>
                       <label className="text-xs text-slate-400 block mb-1">Owner</label>
-                      <p className="text-sm font-medium">{roomOwnerName || 'Unknown'}</p>
+                      <p className="text-sm font-medium">
+                        {currentUserId && roomOwnerId === currentUserId ? `${roomOwnerName || 'Unknown'} (YOU)` : (roomOwnerName || 'Unknown')}
+                      </p>
                     </div>
                     {roomCode && (
                       <div>
@@ -3758,10 +4565,13 @@ export default function CodeEditorPage() {
                   </div>
                 </div>
 
-                {/* Owner Actions */}
-                {isOwner && (
+                {/* Role Permissions */}
+                
+
+                {/* Room Management */}
+                {(isOwner || isAdmin) && (
                   <div className="space-y-3">
-                    <h3 className="text-sm font-semibold text-slate-300">Owner Actions</h3>
+                    <h3 className="text-sm font-semibold text-slate-300">Room Management</h3>
                     <div className="glass rounded-lg p-4 space-y-3">
                       <div>
                         <label className="text-xs text-slate-400 block mb-1">Rename Room</label>
@@ -3780,18 +4590,50 @@ export default function CodeEditorPage() {
                           </button>
                         </div>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-red-300">Delete Room</p>
-                          <p className="text-xs text-slate-500">This will remove the room for all users.</p>
+                      {isOwner && (
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium text-red-300">Delete Room</p>
+                            <p className="text-xs text-slate-500">This will remove the room for all users.</p>
+                          </div>
+                          <button
+                            onClick={handleDeleteRoom}
+                            className="px-3 py-1.5 danger-button text-white rounded-lg text-sm modern-button"
+                          >
+                            Delete
+                          </button>
                         </div>
-                        <button
-                          onClick={handleDeleteRoom}
-                          className="px-3 py-1.5 danger-button text-white rounded-lg text-sm modern-button"
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Room Members */}
+               
+
+                {/* Kicked Users (Owner Only) */}
+                {isOwner && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-300">Kicked Users</h3>
+                    <div className="glass rounded-lg p-3 space-y-2 max-h-48 overflow-y-auto">
+                      {kickedRoomMembers.map((member) => (
+                        <div key={`kicked-${member.userId}`} className="bg-slate-900/40 border border-slate-700/40 rounded-lg px-3 py-2 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{member.userName}</p>
+                            <p className="text-xs text-slate-500">Kicked</p>
+                          </div>
+                          <button
+                            onClick={() => handleUnkickUser(member.userId)}
+                            className="px-2.5 py-1.5 text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition-all modern-button"
+                            title="Unkick User"
+                          >
+                            Unkick
+                          </button>
+                        </div>
+                      ))}
+                      {kickedRoomMembers.length === 0 && (
+                        <p className="text-xs text-slate-500 text-center py-2">No kicked users.</p>
+                      )}
                     </div>
                   </div>
                 )}
