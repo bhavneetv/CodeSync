@@ -1,6 +1,6 @@
 # Code Sync
 
-Code Sync is a **real-time collaborative coding platform** that allows multiple users to write, run, and manage code together in shared rooms.
+Code Sync is a **real-time collaborative coding platform** that allows multiple users to write, run, and manage code together in shared rooms. 
 
 It includes:
 - 🌐 **Web App** (React + Vite)
