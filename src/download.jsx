@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Download, Monitor, Smartphone, CheckCircle, ExternalLink,
@@ -7,7 +7,9 @@ import {
 } from 'lucide-react';
 import Navbar from './Components/navbar';
 import Footer from './Components/footer';
-// Footerr
+
+
+//FOOTER 
 
 const DownloadPage = () => {
     const [selectedOS, setSelectedOS] = useState('windows');
